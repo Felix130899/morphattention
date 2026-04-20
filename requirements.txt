@@ -1,0 +1,10 @@
+torch
+torchvision
+torchaudio
+transformers
+timm
+datasets
+matplotlib
+scikit-learn
+pandas
+opencv-python

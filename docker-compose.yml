@@ -1,0 +1,16 @@
+services:
+  vit-project:
+    image: vit-env
+    build: .
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: '8gb'
+    volumes:
+      - .:/workspace
+    stdin_open: true
+    tty: true
