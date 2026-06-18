@@ -21,6 +21,15 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 5b. Point the Hugging Face cache at the bind-mounted data/ folder instead
+# of baking model weights into the image. data/ already lives on the host
+# (see docker-compose.yml volume mount) and is gitignored, so weights persist
+# across container rebuilds without bloating the image or the git repo.
+# Run scripts/download_sam.py once after first build to populate it.
+ENV HF_HOME=/workspace/data/model_cache/huggingface
+ENV HF_HUB_DISABLE_TELEMETRY=1
+ENV PYTHONPATH=/workspace/src
+
 # 6. Create a non-root user for better compatibility with host file permissions
 # Replace '1000' with your actual UID/GID if they differ (1000 is default for the first Ubuntu user)
 ARG USER_ID=1000

@@ -1,7 +1,9 @@
 torch
 torchvision
 torchaudio
-transformers
+numpy<2
+transformers==4.46.3
+tokenizers==0.20.3
 timm
 datasets
 matplotlib
