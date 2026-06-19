@@ -1,7 +1,7 @@
 """One-time download of the SAM ViT-L checkpoint into the local cache.
 
 Run this once after building the image (it needs network access to fetch
-public model weights from the Hugging Face Hub - no image data is involved):
+public model weights from the Hugging Face Hub):
 
     docker compose run --rm vit-project python scripts/download_sam.py
 
