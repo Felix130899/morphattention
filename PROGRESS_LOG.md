@@ -1,5 +1,46 @@
 # Progress Log
 
+## 2026-06-19 — Batch fish segmentation pipeline
+
+**Goal:** make SAM usable over a whole dataset (thousands of images, mixed
+formats, named by species/origin and *not* bounding-box labelled) without
+hand-clicking a prompt per image, while keeping the clean offline / clean-image
+guarantees the SAM integration established.
+
+**What was built:**
+- `scripts/segment_fish.py` — processes a chosen folder (`--raw-dir`,
+  **required**; images live in per-category subfolders of `data/raw/`, e.g.
+  `data/raw/trout/`), searched recursively, reads any common format
+  (jpg/jpeg/png/tif/tiff/bmp/webp via PIL, no pre-conversion), derives point
+  prompt(s) per image, runs `segment()`, and writes three parallel output trees
+  under `data/processed/segmented/<raw-dir name>/` (nested by folder name so
+  processing several folders never overwrites earlier runs):
+  - `masks/<stem>.png` — binary mask (0 = bg, 255 = fish)
+  - `overlays/<stem>.png` — translucent red mask on the original, for QA
+  - `coco/annotations.json` — one COCO file (polygons + bbox + area) per run
+- Two prompting modes (`--prompt`): `center` (single centre point — fits the
+  single-fish specimen photos, no extra setup) and `yolo` (one mask per
+  detected fish; needs a fish-trained checkpoint — stock YOLO has no fish
+  class).
+- `scripts/download_yolo.py` — one-time YOLO weights fetch mirroring
+  `download_sam.py`; caches the `.pt` into `data/model_cache/` (gitignored,
+  bind-mounted, never baked into the image), so the detector then loads offline.
+- `requirements.txt` — added `ultralytics` (unpinned, matching torch/timm).
+
+**Not yet done / next steps:**
+- **Not yet run on real images** — `data/raw` is still empty; user will try the
+  pipeline on real fish photos next. Check the `overlays/` output first to
+  confirm prompt placement before trusting the masks.
+- No fish-trained YOLO checkpoint sourced yet. Default `yolov8n.pt` is a COCO
+  model (no fish class), present only to prove the download/cache mechanism.
+  Candidates noted: Roboflow Universe fish YOLOv8 (easiest drop-in),
+  Fishial.ai (segmentation + recognition), FathomNet (in-habitat), or training
+  a small custom YOLOv8.
+- `ultralytics` has no hard offline switch like HF's `*_OFFLINE` env vars and
+  may emit anonymous telemetry; loading a local `.pt` won't leak images, but
+  `yolo settings sync=False` would close that gap if the same airtight
+  guarantee is wanted.
+
 ## 2026-06-18 — SAM ViT-L integration
 
 **Goal:** add `facebook/sam-vit-large` (Segment Anything) to the container as
@@ -57,3 +98,25 @@ Docker image or putting any image data at risk of leaving the machine.
   real fish photo once available.
 - `src/data/models/explainability/utils/` exists but is empty — presumably
   where SAM output feeds into the attention-map analysis next.
+
+## 2026-06-19 — Segmentation testing with center mode
+
+**What was tested:**
+- Ran `segment_fish.py` with `--prompt center` on real fish images from
+  `first_test_dataset`.
+- Segmentation completed successfully — masks, overlays, and COCO annotations
+  were all generated and saved correctly.
+
+**Findings:**
+- **Success** — the pipeline works end-to-end with no errors.
+- **Quality issue** — the segmentation quality is poor. The masks do not
+  accurately capture the fish boundaries; they appear too loose or incomplete.
+  This is expected since `center` mode uses only a single point at image centre,
+  which often doesn't provide enough prompt specificity for accurate SAM output.
+
+**Next steps:**
+- Train or source a fish-specific YOLOv8 model to enable `--prompt yolo` mode.
+  This will detect individual fish and use each detection centre as a point
+  prompt, providing better coverage and accuracy per fish.
+- Once a trained fish YOLO is available, re-segment with `--prompt yolo` to
+  compare quality improvements.
