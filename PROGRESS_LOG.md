@@ -120,3 +120,11 @@ Docker image or putting any image data at risk of leaving the machine.
   prompt, providing better coverage and accuracy per fish.
 - Once a trained fish YOLO is available, re-segment with `--prompt yolo` to
   compare quality improvements.
+- Grounding DINO takes the text prompt "fish" and gives you boxes zero-shot
+- The reason to do detector→SAM at all is that you don't have masks yet — SAM is how you cheaply generate them. Once you've   got masks, a YOLO-seg model is your fast deployment model and you drop SAM entirely.
+- Boxes from Grounding DINO ("fish") or a fish-pretrained YOLO.
+Box-prompt SAM 2.1 → masks.
+Human review and cleanup. This is the step people skip and regret. Box-prompted SAM is reliable but not perfect on fins, occlusion, and shadows — fix those, because everything downstream inherits these errors.
+Train YOLO-seg (or Mask R-CNN) on the cleaned masks.
+Loop: use the trained model to label the next batch, correct only its mistakes, retrain. This active-learning loop is where the real scaling happens.
+- Grounding DINO or fish-pretrained YOLO for boxes → SAM 2.1 (use video mode if your data is video) → manual cleanup → train YOLO11-seg → iterate.
