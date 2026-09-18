@@ -16,12 +16,19 @@ Prompting strategy (``--prompt``):
     giving one mask per detected fish. NOTE: stock yolov8*.pt is trained on
     COCO and has NO fish class; pass a fish-trained checkpoint via
     ``--yolo-weights`` for meaningful results.
+  * ``dino``  - run Grounding DINO zero-shot with a text prompt (default
+    "fish.") and feed each detected box straight into SAM as a box prompt.
+    No fish-trained checkpoint needed, but it's a slow, heavy model - boxes
+    are a much stronger SAM prompt than a single centre point, so quality
+    should beat ``center`` immediately.
 
 Run inside the container, e.g.:
 
     docker compose run --rm vit-project python scripts/segment_fish.py
     docker compose run --rm vit-project python scripts/segment_fish.py \
         --prompt yolo --yolo-weights /workspace/data/model_cache/fish_yolo.pt
+    docker compose run --rm vit-project python scripts/segment_fish.py \
+        --prompt dino
 """
 
 import argparse
@@ -32,6 +39,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+from data.models.dino import load_dino, detect
 from data.models.sam import load_sam, segment
 
 # Pillow can decode all of these; we just filter the directory walk by them.
@@ -63,6 +71,18 @@ def yolo_points(detector, image):
         x1, y1, x2, y2 = box.xyxy[0].tolist()
         points.append([[(x1 + x2) / 2, (y1 + y2) / 2]])
     return points
+
+
+def dino_boxes(model, processor, image, text_prompt, box_threshold):
+    """Run Grounding DINO and format the detected boxes for SAM's input_boxes.
+
+    Returns a list like [[[x0, y0, x1, y1], ...]] - one image containing all
+    detected boxes - or an empty list if nothing cleared the threshold.
+    """
+    boxes, scores = detect(model, processor, image, text_prompt=text_prompt, box_threshold=box_threshold)
+    if len(boxes) == 0:
+        return []
+    return [boxes.tolist()]
 
 
 def to_binary(mask_tensor):
@@ -144,11 +164,16 @@ def main():
                              "If not provided, you'll be prompted to choose from available datasets.")
     parser.add_argument("--out-dir", default="/workspace/data/processed/segmented", type=Path,
                         help="Root of the outputs; results nest under <out-dir>/<raw-dir name>/.")
-    parser.add_argument("--prompt", choices=["center", "yolo"], default="center",
-                        help="How to derive point prompts for SAM.")
+    parser.add_argument("--prompt", choices=["center", "yolo", "dino"], default="center",
+                        help="How to derive prompts for SAM.")
     parser.add_argument("--yolo-weights", default="/workspace/data/model_cache/yolov8n.pt",
                         help="Local YOLO checkpoint, pre-cached by scripts/download_yolo.py "
                              "(use a FISH-trained one for real results).")
+    parser.add_argument("--dino-text", default="fish.",
+                        help="Text prompt for Grounding DINO (--prompt dino). Lowercase, "
+                             "each concept ending in a period, e.g. 'fish.'.")
+    parser.add_argument("--dino-box-threshold", type=float, default=0.35,
+                        help="Minimum confidence for a Grounding DINO box to be kept.")
     args = parser.parse_args()
     
     # If raw_dir not provided, prompt user to choose
@@ -168,9 +193,12 @@ def main():
     model, processor = load_sam()
 
     detector = None
+    dino_model = dino_processor = None
     if args.prompt == "yolo":
         from ultralytics import YOLO  # imported lazily so 'center' needs no install
         detector = YOLO(args.yolo_weights)
+    elif args.prompt == "dino":
+        dino_model, dino_processor = load_dino()
 
     # Minimal COCO scaffolding; one category since we only segment "fish".
     coco = {
@@ -192,10 +220,16 @@ def main():
             if not points:
                 print(f"  [skip] no detections: {path.name}")
                 continue
+            masks, iou_scores = segment(model, processor, image, input_points=points)
+        elif args.prompt == "dino":
+            boxes = dino_boxes(dino_model, dino_processor, image, args.dino_text, args.dino_box_threshold)
+            if not boxes:
+                print(f"  [skip] no detections: {path.name}")
+                continue
+            masks, iou_scores = segment(model, processor, image, input_boxes=boxes)
         else:
             points = center_points(image)
-
-        masks, iou_scores = segment(model, processor, image, points)
+            masks, iou_scores = segment(model, processor, image, input_points=points)
 
         # masks is a list with one entry per image in the batch; we pass one
         # image at a time, so take masks[0].
