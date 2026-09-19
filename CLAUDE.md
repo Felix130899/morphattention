@@ -1,3 +1,6 @@
+## Name
+masterthesis_fish_VIT
+
 ## Purpose
 XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 

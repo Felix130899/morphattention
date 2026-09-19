@@ -30,6 +30,7 @@ datasets/
 # If you keep logs or local docker-compose overrides
 .docker/
 docker-compose.override.yml
+docker-compose.yml
 
 # --- OS / Editors ---
 .DS_Store
