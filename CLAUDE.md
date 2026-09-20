@@ -11,11 +11,19 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 
 ## Current state
 - SAM ViT-L integration: loader + smoke test done, not yet wired into devcontainer
+- CUDA/NVML issue was specific to the sandboxed dev session, not this
+  machine: on the actual host, `nvidia-smi` works (driver 595.84, RTX 4070
+  Ti), `nvidia-container-toolkit` was already installed, and
+  `docker-compose.yml` (gitignored, reconstructed this session — see
+  vault/thesis-log/decisions/2026-09-19-gitignore-docker-compose.md) builds
+  and passes `torch.cuda.is_available() == True` inside the container with
+  no changes needed to the file or the Dockerfile. Re-verified from inside
+  the rebuilt dev container by loading a real model (`load_sam()` lands on
+  `cuda:0`, not just the availability flag).
 
 ## Next steps
-1. Run smoke test in actual container
-2. Wire into devcontainer.json postCreateCommand
-3. Pin verified deps in requirements.txt
+1. Wire into devcontainer.json postCreateCommand
+2. Pin verified deps in requirements.txt
 
 ## Detailed log
 See vault/thesis-log/ (symlinked, see below)
