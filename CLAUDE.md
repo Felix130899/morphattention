@@ -10,12 +10,27 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 - NHM attribution required in public outputs
 
 ## Current state
-- SAM ViT-L integration: loader + smoke test done, not yet wired into devcontainer
+- Real NHM Wien export arrived: `data/raw/NHM_datensatz/` (16,975 images,
+  split `full_body/` vs `Röntgen/` subfolders, no images at the root).
+- `scripts/extract_labels.py` built and run: splits filenames on the
+  literal `_NMW`/`_MNW` anchor (catalog number itself has ranges/lists/
+  parens, so it's not digit-parsed) into `data/processed/labels.csv`
+  (species, catalog_number, extra, photo_type, needs_review). 16,966/16,975
+  rows parsed cleanly; see PROGRESS_LOG.md 2026-09-20 entry.
+- Label-structure decision: one flat image folder + CSV mapping, no
+  physical per-species folders; origin left unparsed in `extra` since the
+  convention isn't confirmed yet — see
+  `vault/thesis-log/decisions/2026-09-20-label-structure.md`.
+- Segmentation still unions multiple detections into one mask per image
+  (per-instance split not implemented yet — needed for multi-fish photos).
 
 ## Next steps
-1. Run smoke test in actual container
-2. Wire into devcontainer.json postCreateCommand
-3. Pin verified deps in requirements.txt
+1. Resolve the 9 `needs_review` rows in `labels.csv` by hand and spot-check
+   the `extra` column for a sample of `full_body`/`Röntgen` rows.
+2. Change `to_binary()`/mask-writing in `scripts/segment_fish.py` to emit
+   one mask per detected instance instead of unioning them.
+3. Run `scripts/segment_fish.py --prompt dino` over
+   `data/raw/NHM_datensatz/` once step 2 (per-instance masks) is done.
 
 ## Detailed log
 See vault/thesis-log/ (symlinked, see below)

@@ -1,0 +1,2 @@
+- [ ] get the NHM dataset ready; write a program automaticly scraping the name to a lables file or whatever
+- [ ] do the clean-segmented-dataset bla bla bla task in tasks/
