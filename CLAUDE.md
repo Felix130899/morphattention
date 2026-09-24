@@ -13,7 +13,7 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 - SAM ViT-L + Grounding DINO work on GPU inside the dev container (`--prompt dino` mode exists)
 - NHM dataset in `data/raw/NHM_datensatz/` (16,975 images); `labels.csv` parsed (9 rows need review, origin unconfirmed)
 - `segment_fish.py` still unions all detections into one mask per image
-- Label-extraction and GPU work sit on unmerged branches `task/nhm-label-extraction`, `task/gpu-passthrough-verification`
+- Labels: flat image folder + `labels.csv`, no per-species folders (vault/thesis-log/decisions/2026-09-20-label-structure.md)
 
 ## Next steps
 1. Per-instance masks in `scripts/segment_fish.py` (one mask per DINO box instead of `to_binary()` union)

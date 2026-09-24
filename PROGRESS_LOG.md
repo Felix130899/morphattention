@@ -1,5 +1,105 @@
 # Progress Log
 
+## 2026-09-20 — NHM_datensatz arrives; extract_labels.py built; CUDA diagnosed
+
+**Goal:** turn the real NHM Wien export into a structured label file (steps
+3-4 of `tasks/clean-segmented-dataset-with-structured-labels.md`), now that
+`data/raw/NHM_datensatz/` has landed (16,975 images).
+
+**Dataset:** `data/raw/NHM_datensatz/` has two top-level subfolders,
+`full_body/` (11,766 images) and `Röntgen/` (5,209 X-ray images), nothing
+sitting directly at the root. Filenames follow
+`<species>_NMW<catalog_number>_<free text>.<ext>`, but `catalog_number` is
+not a plain integer in practice: syntype series use ranges (`NMW1290-3`),
+comma lists (`NMW13736-41,44-49`), and parenthetical sub-indices glued on
+directly (`NMW95284(65895_2)`). A few filenames use `MNW` instead of `NMW`
+(a typo in the source data, not corrected here).
+
+**Built `scripts/extract_labels.py`:** walks a raw-dir, splits each
+filename on the literal `_NMW`/`_MNW` anchor (not on a digit-only shape),
+peels a leading digit run off the remainder as `catalog_number`, and keeps
+everything after that verbatim in `extra` rather than guessing at origin
+(origin's encoding is still unconfirmed — see Decision below). Also adds
+`photo_type` from the image's top-level subfolder name (`full_body` /
+`Röntgen`). Writes `data/processed/labels.csv` with columns `file_name,
+photo_type, species, species_raw, catalog_number, extra, needs_review,
+review_reason`.
+
+**Iteration:** the first version anchored on `\d+` immediately after
+`_NMW`, which only handled clean single-number cases — 579/16,975 rows
+flagged. Loosening the split to anchor on the prefix literal instead of
+digit shape, and letting the remainder absorb ranges/lists/parens/typos,
+dropped that to 9/16,975. Those 9 are genuine one-off source anomalies, not
+parser bugs: 3x `MNW` typo (same specimen, 3 X-ray angles), 2x `NoNumber`
+(no catalog number was ever assigned), 1x a different museum's accession
+format (`NRM(Stockholm)51830`), 1x a bare number with no `NMW`/`MNW` prefix
+at all, 1x a literature citation instead of a catalog number
+(`Holly_1928c_Fig.1`), 1x a second, different typo missing the `N`
+(`MW49112`). Each is tagged with a `review_reason` in the CSV.
+
+**Decision:** kept a flat image folder + CSV mapping (no physical
+per-species folders), and deliberately left catalog-number substructure and
+origin unparsed rather than guessed — see
+`vault/thesis-log/decisions/2026-09-20-label-structure.md`. Step 3 of the
+task file (confirming the naming convention with Neo/supervisor) is still
+open, specifically for where/whether origin is encoded.
+
+**Result:** 16,966/16,975 rows (99.9%) parsed cleanly; 2,291 distinct
+`species` values; `labels.csv` exists and is ready for step 6 (run
+`segment_fish.py --prompt dino` over `NHM_datensatz`) once per-instance
+masks (step 2) are implemented.
+
+**CUDA investigated (user asked why masks are slow):** `load_sam()` /
+`load_dino()` already auto-select `cuda` when `torch.cuda.is_available()`
+— no code change needed there. In this container,
+`torch.cuda.is_available()` is `False` despite the image being CUDA-built
+(`torch==2.2.1+cu12.1`) and `/dev/nvidia0`, `/dev/nvidiactl`,
+`/dev/nvidia-uvm` all present; `nvidia-smi` fails with "Failed to
+initialize NVML: Unknown Error". Device files are passed through but NVML
+still can't init, which points at a host/container NVIDIA driver-library
+mismatch (the userspace driver libs nvidia-container-toolkit normally
+injects aren't lining up with the host's kernel module) — a container
+launch/host config issue, not something fixable by editing repo code.
+`docker-compose.yml` is gitignored and wasn't present in this session to
+inspect its GPU device reservation.
+
+**Not yet done / next steps:**
+- Diagnose GPU passthrough at the host/container-launch level.
+- Manual spot-check of `labels.csv`'s `extra` column and the 9
+  `needs_review` rows.
+- Per-instance mask output (step 2, still not done) before running
+  segmentation on the real dataset.
+
+## 2026-09-20 — DINO box-prompting smoke test
+
+**Goal:** confirm `--prompt dino` (Grounding DINO zero-shot detection ->
+box-prompted SAM) runs end-to-end on real images and produces plausible
+masks, per step 1 of `tasks/clean-segmented-dataset-with-structured-labels.md`.
+This was an implementation smoke test, not a center-vs-dino quality
+comparison (DINO boxes are already known/assumed to beat a single center
+point as a SAM prompt).
+
+**Ran:** `scripts/segment_fish.py --prompt dino` and, for reference,
+`--prompt center`, both over `data/raw/first_test_dataset/` (6 WhatsApp
+photos, pre-resized to 224x224 — not yet real full-resolution NHM Wien
+museum images).
+
+**Result:**
+- DINO: 6/6 images produced a detection, 0 skips. One mask per image (still
+  unioned, not per-instance — that split is step 2, not done yet).
+- Center: 6/6 images processed, 0 skips, for comparison.
+- Overlay QA looks correct; DINO's SAM prompt is visibly tighter/wider than
+  center's, e.g. image 1: DINO bbox width 221px/area 12610px vs center's
+  188px/area 10721px, consistent across all 6 images.
+
+**Not yet done / next steps:**
+- Per-instance mask output (step 2) — `to_binary()` still unions all
+  detections into one mask per image.
+- NHM Wien naming convention confirmation and `scripts/extract_labels.py`
+  (steps 3-4) — blocked on real specimen images arriving.
+- Full run on real (non-resized, multi-fish-per-photo) museum images once
+  available.
+
 ## 2026-06-19 — Batch fish segmentation pipeline
 
 **Goal:** make SAM usable over a whole dataset (thousands of images, mixed
