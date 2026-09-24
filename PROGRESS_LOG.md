@@ -1,5 +1,60 @@
 # Progress Log
 
+## 2026-09-20 — GPU passthrough re-verified inside rebuilt dev container (real model load)
+
+**Goal:** close out the CUDA/NVML item for good by checking from *inside*
+the actual rebuilt dev container (VS Code "Rebuild Container", picking up
+the fixed `docker-compose.yml`) — not just a one-off `docker compose run`
+container as in the entry below — and by loading a real model rather than
+only checking the `torch.cuda.is_available()` flag.
+
+**Ran:** `nvidia-smi` (RTX 4070 Ti, driver 595.84); `torch.cuda.is_available()`
+→ `True`, `get_device_name(0)` → `NVIDIA GeForce RTX 4070 Ti`;
+`load_sam()` from `src/data/models/sam.py` (checkpoint already cached
+under `data/model_cache/`, no network needed) followed by
+`next(model.parameters()).device` and a point-prompted `segment()` call on
+one `first_test_dataset` image.
+
+**Result:** model loads onto `cuda:0` (not just the availability flag),
+load took 2.72s, inference took 0.85s, mask shape correct
+(`[1, 3, 224, 224]`). No prior CPU-only timing numbers exist in this log to
+compare against (the earlier CUDA-unavailable session only reported
+`is_available() == False`, not actual CPU inference times), so this is a
+GPU-only timing reference for future comparison, not a speedup measurement.
+
+**Not yet done / next steps:** none for GPU — item stays closed, now
+confirmed from inside the real dev container rather than a one-off
+container.
+
+## 2026-09-20 — GPU passthrough verified on real host; docker-compose.yml confirmed working
+
+**Goal:** verify, on the actual dev machine (not the sandboxed session from
+earlier today), whether the CUDA/NVML failure was a real driver problem or
+an artifact of that sandbox, and confirm the reconstructed
+`docker-compose.yml` (gitignored per
+`vault/thesis-log/decisions/2026-09-19-gitignore-docker-compose.md`)
+actually works.
+
+**Ran on host:** `nvidia-smi` — works, driver 595.84, CUDA 13.2, RTX 4070
+Ti. `dpkg -l | grep nvidia-container` — `nvidia-container-toolkit` 1.20.0-1
+already installed; `docker info` already lists the `nvidia` runtime, so no
+toolkit install/config step was needed.
+
+**Ran:** `docker compose config` (mounts to `~/.claude` and
+`~/Obsidian_Linux` both resolve and exist), `docker compose build` (clean
+build, no errors), then
+`docker compose run --rm vit-project python -c "import torch; print(torch.cuda.is_available())"`
+→ `True`, device count 1, `NVIDIA GeForce RTX 4070 Ti`.
+
+**Result:** the NVML failure was specific to the earlier sandboxed session
+(no real GPU passthrough there), not a problem with this repo or machine.
+`docker-compose.yml` needed **no changes** — the reconstruction from
+earlier today (build args, `vit-project` service name, both bind mounts,
+`deploy.resources.reservations.devices` GPU block) was correct as written
+and is now confirmed working end-to-end on the real host.
+
+**Not yet done / next steps:** none for GPU — this line item is closed.
+
 ## 2026-09-20 — NHM_datensatz arrives; extract_labels.py built; CUDA diagnosed
 
 **Goal:** turn the real NHM Wien export into a structured label file (steps
