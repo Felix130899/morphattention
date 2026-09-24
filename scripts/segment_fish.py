@@ -503,7 +503,7 @@ def main():
     parser.add_argument("--dedup-containment", type=float, default=0.8,
                         help="Duplicate if the smaller mask AND its box lie at least this fraction "
                              "inside the other. Tunable guess.")
-    parser.add_argument("--tiny-area-frac", type=float, default=0.005,
+    parser.add_argument("--tiny-area-frac", type=float, default=0.001,
                         help="Flag instances smaller than this fraction of the image. Flag only. Tunable guess.")
     parser.add_argument("--giant-area-frac", type=float, default=0.9,
                         help="Flag instances larger than this fraction of the image. Flag only. Tunable guess.")
