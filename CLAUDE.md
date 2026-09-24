@@ -10,16 +10,15 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 - NHM attribution required in public outputs
 
 ## Current state
-- SAM ViT-L + Grounding DINO work on GPU inside the dev container (`--prompt dino` mode exists)
-- NHM dataset in `data/raw/NHM_datensatz/` (16,975 images); `labels.csv` parsed (9 rows need review, origin unconfirmed)
-- `segment_fish.py` still unions all detections into one mask per image
-- Labels: flat image folder + `labels.csv`, no per-species folders (vault/thesis-log/decisions/2026-09-20-label-structure.md)
+- `segment_fish.py` writes one mask per fish (COCO + QA flags, `--resume`, `run_config.json`); design: vault/thesis-log/decisions/2026-09-24-per-instance-mask-output.md
+- Pilot (11 photos + 8 X-rays, `data/processed/segmented/pilot_per_instance/`): works on both; `--tiny-area-frac` lowered 0.005 → 0.001 after tray over-flagging
+- Species names printed into many `_WEB` images → masked-image training + raw-image Clever Hans baseline (vault/thesis-log/decisions/2026-09-24-text-in-images-clever-hans.md)
+- NHM dataset in `data/raw/NHM_datensatz/` (16,975 images, 2 corrupt X-ray JPEGs); `labels.csv` parsed (9 rows need review, origin unconfirmed)
 
 ## Next steps
-1. Per-instance masks in `scripts/segment_fish.py` (one mask per DINO box instead of `to_binary()` union)
-2. Run DINO+SAM on a stratified sample of `NHM_datensatz` (mixed species, multi-fish, Röntgen)
-3. Write mask-policy decision, then triage/fix masks in CVAT (self-hosted) or X-AnyLabeling
-4. Train YOLO-seg on 300–500 curated images, evaluate on held-out test set
+1. Run `segment_fish.py --prompt dino` on a stratified sample, `full_body/` and `Röntgen/` as separate runs; tune `--tiny-area-frac`, check dedup/overlap on real data
+2. Write mask-policy decision (photos + X-rays), then triage/fix masks in CVAT (self-hosted) or X-AnyLabeling
+3. Train YOLO-seg on 300–500 curated images, separate test sets per domain, joint model vs. two specialists
 - Full checklist: vault/thesis-log/tasks/clean-segmented-dataset-with-structured-labels.md
 
 ## Detailed log
