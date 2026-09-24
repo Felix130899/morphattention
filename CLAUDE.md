@@ -16,7 +16,7 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 - NHM dataset in `data/raw/NHM_datensatz/` (16,975 images, 2 corrupt X-ray JPEGs); `labels.csv` parsed (9 rows need review, origin unconfirmed)
 
 ## Next steps
-1. Run `segment_fish.py --prompt dino` on a stratified sample, `full_body/` and `Röntgen/` as separate runs; tune `--tiny-area-frac`, check dedup/overlap on real data
+1. Full run over `NHM_datensatz` running (`data/processed/segmented/full_run.log`; resume: `data/processed/segmented/run_full_nhm.sh`); when done, check QA flag counts (dedup/overlap/tiny) and skipped.txt
 2. Write mask-policy decision (photos + X-rays), then triage/fix masks in CVAT (self-hosted) or X-AnyLabeling
 3. Train YOLO-seg on 300–500 curated images, separate test sets per domain, joint model vs. two specialists
 - Full checklist: vault/thesis-log/tasks/clean-segmented-dataset-with-structured-labels.md
