@@ -1,5 +1,56 @@
 # Progress Log
 
+## 2026-09-24 — Per-instance masks in segment_fish.py
+
+**Goal:** one mask per detected fish instead of one unioned mask per image,
+so the masks can become YOLO-seg training data. Design settled question by
+question beforehand: `vault/thesis-log/decisions/2026-09-24-per-instance-mask-output.md`.
+
+**Built (`scripts/segment_fish.py`, rewritten):**
+- COCO `annotations.json` is the source of truth, one annotation per
+  instance with detector box + score, all 3 SAM IoU scores and the chosen
+  candidate index, and `tiny`/`giant` flags. Image-level `qa` block with
+  flags (`multi_instance`, `duplicates_removed`, `overlap_resolved`,
+  `empty_masks_dropped`, `tiny`, `giant`) for triage filtering.
+- SAM candidate = highest predicted IoU. The old "index 0 is best" comment
+  was wrong: transformers returns the 3 candidates unsorted.
+- Duplicate removal by mask + box containment (higher detector score wins;
+  giants never dropped), contested pixels go to the box owner, empty masks
+  dropped and counted.
+- Crash-safe: `annotations.jsonl` appended per image, `--resume`,
+  `run_config.json` with settings + git commit per session; a resume with
+  different settings is refused.
+- Works at `--max-side 2048` (SAM sees 1024 px anyway); COCO geometry and
+  the combined mask PNG are mapped back to original resolution. Overlays
+  are now JPEG at working resolution.
+- Unreadable files are logged to `skipped.txt` instead of crashing.
+- `yolo` mode now uses detector boxes as SAM box prompts (was box centres).
+- `tests/test_segment_fish.py`: 12 unit tests on synthetic masks.
+
+**Dataset facts found on the way (`NHM_datensatz`):** median 7.7 MP, max
+151 MP (25 images above Pillow's 89 MP guard; limit lifted); 2 corrupt
+JPEGs in `Röntgen/` (`Alburnus_mentoides_NMW55510_SYNTYPE_RW_WEB.jpg`,
+`Phoxinellus_pseudalepidotus_NMW51103_1-7_paratypes_RW1622_WEB.jpg`), also
+unreadable by OpenCV; all 8-bit; no EXIF rotation.
+
+**Pilot (`data/processed/segmented/pilot_per_instance/`, 11 photos + 8
+X-rays, separate runs, `--prompt dino`, default thresholds):**
+- Instance counts match the catalog series in the filenames in every
+  multi-specimen image checked (e.g. `1-35` → 35, `8-14` X-ray → 7).
+  Ruler and handwritten label in the 35-fish tray were not detected.
+- Fins included on the checked photos; X-ray masks follow the full body
+  outline (soft tissue + fins), not just the skeleton.
+- The best SAM candidate was index 0 for only 27/62 photo instances and
+  0/18 X-ray instances, so the old code took a worse mask for most fish.
+- ~1 s/image incl. model load (~5 h for the full dataset); ~0.35 MB
+  output per image (~6 GB total).
+- `tiny` threshold (0.5%) is miscalibrated: 22/35 normal fish in the tray
+  image were flagged.
+- Duplicate removal and overlap resolution never triggered in this pilot;
+  they are covered by unit tests only so far.
+- Species name + catalog number are printed into many `_WEB` images
+  (3 of 4 overlays viewed). Clever Hans risk for the ViT, see vault log.
+
 ## 2026-09-20 — GPU passthrough re-verified inside rebuilt dev container (real model load)
 
 **Goal:** close out the CUDA/NVML item for good by checking from *inside*
