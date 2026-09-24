@@ -38,3 +38,5 @@ docker-compose.yml
 .idea/
 *.swp
 *.log
+# private, not for the repo
+masterthesis_expose.pdf
