@@ -10,12 +10,17 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 - NHM attribution required in public outputs
 
 ## Current state
-- SAM ViT-L integration: loader + smoke test done, not yet wired into devcontainer
+- SAM ViT-L + Grounding DINO work on GPU inside the dev container (`--prompt dino` mode exists)
+- NHM dataset in `data/raw/NHM_datensatz/` (16,975 images); `labels.csv` parsed (9 rows need review, origin unconfirmed)
+- `segment_fish.py` still unions all detections into one mask per image
+- Label-extraction and GPU work sit on unmerged branches `task/nhm-label-extraction`, `task/gpu-passthrough-verification`
 
 ## Next steps
-1. Run smoke test in actual container
-2. Wire into devcontainer.json postCreateCommand
-3. Pin verified deps in requirements.txt
+1. Per-instance masks in `scripts/segment_fish.py` (one mask per DINO box instead of `to_binary()` union)
+2. Run DINO+SAM on a stratified sample of `NHM_datensatz` (mixed species, multi-fish, Röntgen)
+3. Write mask-policy decision, then triage/fix masks in CVAT (self-hosted) or X-AnyLabeling
+4. Train YOLO-seg on 300–500 curated images, evaluate on held-out test set
+- Full checklist: vault/thesis-log/tasks/clean-segmented-dataset-with-structured-labels.md
 
 ## Detailed log
 See vault/thesis-log/ (symlinked, see below)
