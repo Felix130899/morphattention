@@ -14,11 +14,14 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 - Pilot (11 photos + 8 X-rays, `data/processed/segmented/pilot_per_instance/`): works on both; `--tiny-area-frac` lowered 0.005 → 0.001 after tray over-flagging
 - Species names printed into many `_WEB` images → masked-image training + raw-image Clever Hans baseline (vault/thesis-log/decisions/2026-09-24-text-in-images-clever-hans.md)
 - NHM dataset in `data/raw/NHM_datensatz/` (16,975 images, 2 corrupt X-ray JPEGs); `labels.csv` parsed (9 rows need review, origin unconfirmed)
+- `scripts/review_masks.py`: local keyboard review of overlays (→ ok, f fix, x drop) → `<run-dir>/review/fix.txt`, `drop.txt`
 
 ## Next steps
 1. Full run over `NHM_datensatz` running (`data/processed/segmented/full_run.log`; resume: `data/processed/segmented/run_full_nhm.sh`); when done, check QA flag counts (dedup/overlap/tiny) and skipped.txt
-2. Write mask-policy decision (photos + X-rays), then triage/fix masks in CVAT (self-hosted) or X-AnyLabeling
-3. Train YOLO-seg on 300–500 curated images, separate test sets per domain, joint model vs. two specialists
+2. Check the "Kopie" duplicate photos in `NHM_datensatz` (keep one or delete; they would leak between train and test sets)
+3. Write mask-policy decision (photos + X-rays), then review all masks with `review_masks.py`
+4. Bad ones: exclude drop.txt; cut a COCO subset of fix.txt + skipped.txt, fix it in CVAT/X-AnyLabeling, merge it back
+5. Train YOLO-seg on 300–500 curated images, separate test sets per domain, joint model vs. two specialists
 - Full checklist: vault/thesis-log/tasks/clean-segmented-dataset-with-structured-labels.md
 
 ## Detailed log
