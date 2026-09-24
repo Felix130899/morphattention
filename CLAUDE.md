@@ -11,8 +11,8 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 
 ## Current state
 - `segment_fish.py` writes one mask per fish (COCO + QA flags, `--resume`, `run_config.json`); design: vault/thesis-log/decisions/2026-09-24-per-instance-mask-output.md
-- Pilot (11 photos + 8 X-rays, `data/processed/segmented/pilot_per_instance/`): works on both; `--tiny-area-frac` 0.005 too high for trays
-- Species names printed into many `_WEB` images: Clever Hans risk (vault/thesis-log/log/2026-09-24-per-instance-masks.md)
+- Pilot (11 photos + 8 X-rays, `data/processed/segmented/pilot_per_instance/`): works on both; `--tiny-area-frac` lowered 0.005 → 0.001 after tray over-flagging
+- Species names printed into many `_WEB` images → masked-image training + raw-image Clever Hans baseline (vault/thesis-log/decisions/2026-09-24-text-in-images-clever-hans.md)
 - NHM dataset in `data/raw/NHM_datensatz/` (16,975 images, 2 corrupt X-ray JPEGs); `labels.csv` parsed (9 rows need review, origin unconfirmed)
 
 ## Next steps
