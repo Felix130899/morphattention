@@ -314,14 +314,21 @@ def evaluate(args):
     from sklearn.preprocessing import StandardScaler
 
     data = np.load(args.out_dir / f"features_{args.domain}.npz")
-    y = data["genus"]
+    keep = np.ones(len(data["genus"]), bool)
+    n_excluded = 0
+    if args.exclude is not None:
+        # robustness checks, e.g. without suspected whole-background bleed (scripts/flag_bleed.py)
+        drop = {l.strip() for l in args.exclude.read_text(encoding="utf-8").splitlines() if l.strip()}
+        keep = ~np.isin(data["file_names"], list(drop))
+        n_excluded = int((~keep).sum())
+    y = data["genus"][keep]
     classes = np.unique(y)
     chance = 1 / len(classes)
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
 
     results, correct = {}, {}
     for v in VARIANTS:
-        X = data[f"X_{v}"]
+        X = data[f"X_{v}"][keep]
         clf = make_pipeline(StandardScaler(), PCA(n_components=min(args.pca, X.shape[1]), random_state=args.seed),
                             LogisticRegression(C=args.C, max_iter=5000))
         pred = cross_val_predict(clf, X, y, cv=cv)
@@ -352,7 +359,8 @@ def evaluate(args):
     else:
         verdict = "SAFE: background near the fish adds no label information beyond the outline"
 
-    print(f"\n{args.domain}: {len(y)} images, {len(classes)} genera, chance = {chance:.1%}\n")
+    excl = f", {n_excluded} excluded via {args.exclude}" if args.exclude is not None else ""
+    print(f"\n{args.domain}: {len(y)} images, {len(classes)} genera, chance = {chance:.1%}{excl}\n")
     print(f"{'variant':<12} {'acc':>6} {'95% CI':>15} {'bal.acc':>8} {'p vs chance':>12}")
     for v in VARIANTS:
         r = results[v]
@@ -366,10 +374,11 @@ def evaluate(args):
               f"images right only by one)  McNemar p = {pr['p']:.3g}")
     print(f"\nVerdict: {verdict}")
 
-    out = {"domain": args.domain, "n_images": int(len(y)), "n_genera": int(len(classes)), "chance": chance,
+    out = {"domain": args.domain, "n_images": int(len(y)),
+           "exclude": str(args.exclude) if args.exclude is not None else None, "n_excluded": n_excluded, "n_genera": int(len(classes)), "chance": chance,
            "margin_frac": float(data["margin_frac"]), "pca": args.pca, "C": args.C, "seed": args.seed,
            "variants": results, "pairs": pairs, "control_ok": bool(control_ok), "verdict": verdict}
-    path = args.out_dir / f"results_{args.domain}.json"
+    path = args.out_dir / f"results_{args.domain}{'_' + args.tag if args.tag else ''}.json"
     path.write_text(json.dumps(out, indent=2))
     print(f"Wrote {path}")
 
@@ -398,6 +407,9 @@ def main():
     p.add_argument("--domain", choices=list(DOMAINS), required=True)
     p.add_argument("--pca", type=int, default=256)
     p.add_argument("--C", type=float, default=1.0)
+    p.add_argument("--exclude", type=Path, default=None,
+                   help="file with image names to leave out (robustness checks)")
+    p.add_argument("--tag", default="", help="suffix for the results file, e.g. 'no_bleed'")
 
     args = parser.parse_args()
     {"select": select, "features": features, "evaluate": evaluate}[args.cmd](args)
