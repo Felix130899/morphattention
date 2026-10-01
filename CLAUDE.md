@@ -10,15 +10,16 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 - NHM attribution required in public outputs
 
 ## Current state
-- `segment_fish.py` writes one mask per fish (COCO + QA flags, `--resume`, `run_config.json`); design: vault/thesis-log/decisions/2026-09-24-per-instance-mask-output.md
-- First full run done (2026-09-24, `data/processed/segmented/{full_body,Röntgen}/`): 11,764 photos → 20,461 masks, 5,207 X-rays, 2 unreadable. Masks cut fins (main failure in 1,841 alphabetical photo reviews, ~10 % bad), so the run will be redone; those old reviews are not QA-model training labels
-- Decided: no manual review of all 17k masks. Fix generator → re-run → QA model trained on a random reviewed sample ranks masks → review top 5–10 % + 300 random per domain. Mask policy: vault/thesis-log/decisions/2026-10-01-mask-policy.md (≤ ~5 % fin-edge loss OK, bleed/tags never OK, margin only if ring test passes)
-- Species names printed into many `_WEB` images → masked-image training + raw-image Clever Hans baseline (vault/thesis-log/decisions/2026-09-24-text-in-images-clever-hans.md)
-- NHM dataset in `data/raw/NHM_datensatz/` (16,942 images after removing 33 byte-identical "Kopie" duplicates); `labels.csv` matches the image set (9 rows need review, origin unconfirmed); train/test split must be by NMW specimen number
+- Masks: decided setting = B (`--mask-threshold -1 --min-component-frac 0.01`) + 3 % margin applied when building training images; blind dev-set review: fix rate 39 → 23 % photos, 36 → 22 % X-rays, cut fins nearly gone (vault/thesis-log/decisions/2026-10-01-fin-fix-setting.md + results HTML next to it)
+- Margin ring test passed (`scripts/margin_ring_test.py`, DINOv2 linear probe): margin adds no genus info beyond the outline; background alone predicts genus at 71 % / 61 % → masking is necessary
+- `segment_fish.py`: `--candidate/--mask-threshold/--margin-frac/--min-component-frac/--image-list` + per-instance QA features; `review_masks.py`: categories (keys 1–6) + blind `--compare` mode + `--summary`. Mask policy: vault/thesis-log/decisions/2026-10-01-mask-policy.md
+- Old full run (2026-09-24, `data/processed/segmented/{full_body,Röntgen}/`) is superseded; code checkpoint before the fin fix: git tag `pre-fin-fix-2026-10-01`
+- NHM dataset: 16,942 images (Kopie duplicates removed), `labels.csv` matches (9 rows need review, origin unconfirmed); split train/test by NMW specimen number
 
 ## Next steps
-1. Fin fix on a fixed dev set (~50 photos from `full_body/review/fix.txt` + ~30 X-rays): largest-area SAM candidate vs. `best_candidates` argmax, logit threshold −1…−3, size-relative margin + ring test (photos and X-rays separately); write QA features (candidate areas, area ratio, edge logit band, border touch, components) into COCO; then re-run everything into a new run dir
-2. Extend `scripts/review_masks.py` (random sample + categories fin_cut/bleed/merged/partial/wrong_object/missed_fish), review ~1,000 per domain, train QA model (features + DINOv2 crop embedding), rank all masks
+1. Full re-run with setting B (no margin) over `full_body` and `Röntgen` into a new run dir under `data/processed/segmented/` (pattern: `data/processed/devset_fin_fix/run_devset.sh`, ~2 h)
+2. Look at C's remaining non-fin errors (photos: 9 wrong_object, several catfish `_HOLOTYPE_…_SL…` images, + 4 missed_fish; X-rays: 9 bleed); lists in the results HTML
+3. Random review sample per domain (~1,000 each, excluding `data/processed/devset_fin_fix/` images) with `review_masks.py --image-list`, then train the QA model (QA features + DINOv2 crop embedding) and rank all masks
 - Full checklist: vault/thesis-log/tasks/clean-segmented-dataset-with-structured-labels.md
 
 ## Detailed log
