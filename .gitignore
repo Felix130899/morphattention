@@ -20,7 +20,7 @@ checkpoints/
 
 # --- Datasets ---
 # Never upload your training images/data to GitHub
-data/
+/data/
 datasets/
 *.zip
 *.tar.gz
@@ -40,3 +40,6 @@ docker-compose.yml
 *.log
 # private, not for the repo
 masterthesis_expose.pdf
+
+# --- Claude Code agent worktrees ---
+.claude/worktrees/
