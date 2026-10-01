@@ -27,15 +27,37 @@ Prompting strategy (``--prompt``):
   * ``dino``  - Grounding DINO zero-shot boxes for a text prompt (default
     "fish.") as SAM box prompts. Slow and heavy, but no training needed.
 
-Per image: detect -> SAM (3 candidates per prompt, keep the highest predicted
-IoU) -> drop empty masks -> drop duplicate detections -> give every contested
-pixel to exactly one instance -> flag tiny/giant instances. Every threshold is
-a CLI flag and a starting guess, to be tuned per domain (photo vs. X-ray) on
-real overlays - none of the defaults comes from the data.
+Per image: detect -> SAM (3 candidates per prompt; threshold the mask logits
+at ``--mask-threshold``; keep one candidate per ``--candidate``) -> drop empty
+masks -> drop duplicate detections -> give every contested pixel to exactly
+one instance -> optionally grow each instance by a size-relative margin
+(``--margin-frac``) -> flag tiny/giant instances. Every threshold is a CLI
+flag and a starting guess, to be tuned per domain (photo vs. X-ray) on real
+overlays - none of the defaults comes from the data.
+
+Fin recovery (SAM tends to cut off fins; see
+vault/thesis-log/decisions/2026-10-01-mask-policy.md). All three default to
+the original behaviour, so a run with defaults reproduces the old masks:
+  * ``--candidate`` ``score`` (default: highest predicted IoU) or
+    ``largest`` (largest candidate area after thresholding).
+  * ``--mask-threshold`` (default 0.0 = SAM's own cut) applied to the mask
+    logits at working resolution; lower (e.g. -2) keeps translucent fins.
+  * ``--margin-frac`` (default 0 = off) grows every final instance by
+    r = max(1, round(margin_frac * sqrt(area))) px, never into another fish.
+
+Per-instance QA features (COCO annotation + annotations.jsonl), meant as
+inputs for the mask-QA model: ``sam_candidate_areas``,
+``area_ratio_largest_to_chosen``, ``edge_uncertain_frac`` (fin-loss signal,
+see ``edge_uncertain_frac()``), ``touches_border``, ``n_components``,
+``margin_px``. Areas and ``margin_px`` are in working-resolution pixels.
+
+``--image-list`` restricts a run to the listed files (e.g. a dev set), one
+path per line relative to ``--raw-dir`` as in COCO ``file_name``.
 
 Crash-safe: re-run with ``--resume`` to skip every image already in
-annotations.jsonl. A resume with different settings is refused, so one run
-never mixes masks made with different thresholds.
+annotations.jsonl. A resume with different settings (incl. a different
+image list) is refused, so one run never mixes masks made with different
+thresholds.
 
 Run inside the container, e.g.:
 
@@ -43,11 +65,17 @@ Run inside the container, e.g.:
         --raw-dir /workspace/data/raw/NHM_datensatz/full_body --prompt dino
     docker compose run --rm vit-project python scripts/segment_fish.py \
         --raw-dir /workspace/data/raw/NHM_datensatz/full_body --prompt dino --resume
+    docker compose run --rm vit-project python scripts/segment_fish.py \
+        --raw-dir /workspace/data/raw/NHM_datensatz/full_body --prompt dino \
+        --image-list dev_set.txt --candidate largest --mask-threshold -2 --margin-frac 0.03 \
+        --out-dir /workspace/data/processed/segmented/fin_largest_t-2_m0.03
 """
 
 import argparse
 import datetime
+import hashlib
 import json
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -58,7 +86,7 @@ from PIL import Image, ImageDraw, ImageFont
 from data.models.dino import CHECKPOINT as DINO_CHECKPOINT
 from data.models.dino import detect, load_dino
 from data.models.sam import CHECKPOINT as SAM_CHECKPOINT
-from data.models.sam import load_sam, segment
+from data.models.sam import load_sam
 
 # NHM scans reach ~150 MP, above Pillow's decompression-bomb guard (89 MP).
 # These are trusted local museum files, so lift the limit.
@@ -75,12 +103,54 @@ PALETTE = [
     (70, 240, 240), (240, 50, 230), (210, 245, 60), (250, 190, 212), (0, 128, 128),
 ]
 
+# edge_uncertain_frac(): ring width as a fraction of sqrt(mask area), and how
+# far below the mask threshold a logit still counts as "almost fish".
+EDGE_RING_FRAC = 0.02
+EDGE_BAND_LOGITS = 3.0
+
+# Settings added after the first full run, with the value that reproduces it.
+# A run_config.json written before they existed lacks them; resuming such a
+# run is allowed only with exactly these values.
+LEGACY_DEFAULTS = {"candidate": "score", "mask_threshold": 0.0, "margin_frac": 0.0,
+                   "image_list": None, "image_list_sha256": None}
+
 
 def iter_images(root: Path):
     """Yield every image file under ``root`` (recursively), sorted for determinism."""
     for path in sorted(root.rglob("*")):
         if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES:
             yield path
+
+
+def parse_image_list(text):
+    """File names from an ``--image-list`` file, in file order, without repeats.
+
+    One name per line, relative to ``--raw-dir`` with forward slashes (the
+    COCO ``file_name`` form, e.g. ``Abramis_brama_NMW12345_left_WEB.jpg``).
+    Surrounding whitespace is stripped; blank lines and lines starting with
+    ``#`` are ignored (no trailing comments - '#' may occur in a name).
+    """
+    names = []
+    for line in text.splitlines():
+        name = line.strip()
+        if name and not name.startswith("#") and name not in names:
+            names.append(name)
+    return names
+
+
+def select_images(rel_names, wanted):
+    """Restrict ``{path: rel_name}`` to the names in ``wanted``.
+
+    Fails loudly (SystemExit listing every offender) if a wanted name is not
+    an image under ``--raw-dir``, so a typo can't silently shrink a dev set.
+    """
+    available = set(rel_names.values())
+    missing = [n for n in wanted if n not in available]
+    if missing:
+        raise SystemExit(f"{len(missing)} name(s) in --image-list are not images under --raw-dir:\n  "
+                         + "\n  ".join(missing))
+    wanted = set(wanted)
+    return {p: r for p, r in rel_names.items() if r in wanted}
 
 
 def load_working_image(path, max_side):
@@ -115,6 +185,53 @@ def best_candidates(candidate_masks, iou_scores):
     """
     chosen = iou_scores.argmax(axis=1)
     return candidate_masks[np.arange(len(chosen)), chosen], chosen
+
+
+def sam_logits(model, processor, image, input_points=None, input_boxes=None):
+    """Like ``data.models.sam.segment`` but returns SAM's raw mask logits.
+
+    Same processor/model call; the only difference is ``binarize=False`` in
+    ``post_process_masks``, which then skips its final ``masks > 0.0`` and
+    returns the logits upscaled (bilinear) to the working image size. So
+    ``logits > 0.0`` is bit-identical to ``segment()``'s masks.
+    Returns (logits (N, 3, H, W) float32, iou_scores (N, 3)) as numpy.
+    """
+    import torch
+
+    device = next(model.parameters()).device
+    inputs = processor(
+        image, input_points=input_points, input_boxes=input_boxes, return_tensors="pt"
+    ).to(device)
+    with torch.no_grad():
+        outputs = model(**inputs)
+    logits = processor.image_processor.post_process_masks(
+        outputs.pred_masks.cpu(),
+        inputs["original_sizes"].cpu(),
+        inputs["reshaped_input_sizes"].cpu(),
+        binarize=False,
+    )
+    return logits[0].numpy(), outputs.iou_scores.cpu()[0].numpy()
+
+
+def choose_candidates(logits, iou_scores, threshold=0.0, rule="score"):
+    """Threshold SAM's 3 candidates per prompt and keep one of them.
+
+    logits: (N, 3, H, W) float; iou_scores: (N, 3). A pixel is in a
+    candidate when its logit is > ``threshold`` (strict, like HF's own
+    binarisation). ``rule`` "score" keeps the highest predicted IoU (=
+    ``best_candidates``); "largest" keeps the candidate with the most pixels
+    (ties -> lowest candidate index).
+    Returns (masks (N, H, W) bool, chosen index (N,), candidate areas (N, 3)).
+    """
+    candidates = logits > threshold
+    areas = candidates.reshape(*candidates.shape[:2], -1).sum(axis=2)
+    if rule == "score":
+        chosen = iou_scores.argmax(axis=1)
+    elif rule == "largest":
+        chosen = areas.argmax(axis=1)
+    else:
+        raise ValueError(f"unknown candidate rule {rule!r}")
+    return candidates[np.arange(len(chosen)), chosen], chosen, areas
 
 
 def mask_containment(inner, outer):
@@ -203,6 +320,95 @@ def resolve_overlaps(masks, boxes, scores):
     return out, len(ys)
 
 
+def _crop(mask, pad):
+    """Slices of ``mask``'s bounding box grown by ``pad`` px, clipped to the image."""
+    ys, xs = np.nonzero(mask)
+    h, w = mask.shape
+    return (slice(max(0, ys.min() - pad), min(h, ys.max() + pad + 1)),
+            slice(max(0, xs.min() - pad), min(w, xs.max() + pad + 1)))
+
+
+def grow_margins(masks, margin_frac):
+    """Grow every instance by a size-relative margin without touching other fish.
+
+    Instance k gets r_k = max(1, round(margin_frac * sqrt(area_k))) px: every
+    background pixel whose Euclidean distance (pixel centre to nearest mask
+    pixel centre) is <= r_k. Pixels of any instance's input mask are never
+    given away. A background pixel reached by several margins goes to the
+    nearest instance; at an exact distance tie the lower instance index
+    wins. So every pixel still belongs to at most one instance.
+    margin_frac <= 0 returns the masks unchanged (copy) with r = 0.
+
+    masks: (N, H, W) bool, non-empty, disjoint. Returns (masks, r (N,) int).
+    """
+    n = len(masks)
+    if margin_frac <= 0 or n == 0:
+        return masks.copy(), np.zeros(n, dtype=int)
+    from scipy.ndimage import distance_transform_edt
+
+    occupied = masks.any(axis=0)
+    best = np.full(occupied.shape, np.inf)
+    owner = np.full(occupied.shape, -1)
+    radii = np.zeros(n, dtype=int)
+    for k in range(n):
+        radii[k] = max(1, round(margin_frac * math.sqrt(masks[k].sum())))
+        # The crop holds the whole mask, so in-crop distances are exact.
+        sl = _crop(masks[k], radii[k])
+        dist = distance_transform_edt(~masks[k][sl])
+        take = (dist <= radii[k]) & ~occupied[sl] & (dist < best[sl])  # strict: ties keep lower k
+        best[sl][take] = dist[take]
+        owner[sl][take] = k
+    out = masks.copy()
+    for k in range(n):
+        out[k] |= owner == k
+    return out, radii
+
+
+def edge_uncertain_frac(mask, logits, threshold, blocked=None):
+    """Fin-loss signal: share of a thin ring just outside ``mask`` that SAM almost kept.
+
+    Exact definition (all at working resolution):
+      w    = max(1, round(EDGE_RING_FRAC * sqrt(mask area)))   (2 % -> w px)
+      ring = pixels NOT in ``mask`` (and not in ``blocked``, i.e. other
+             instances) whose Euclidean distance to the nearest mask pixel
+             is <= w
+      band = ring pixels with threshold - EDGE_BAND_LOGITS <= logit <= threshold
+      edge_uncertain_frac = |band| / |ring|        (0.0 if the ring is empty)
+    ``logits`` are the chosen SAM candidate's logits; a pixel is in the
+    candidate iff logit > threshold, so ``band`` is everything just outside
+    the cut that was within 3 logits of being kept. Translucent fins sit
+    there at slightly negative logits, so a high value suggests a cut fin;
+    a clean edge against background has logits far below the threshold.
+    ``mask`` is the final instance before any margin.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    w = max(1, round(EDGE_RING_FRAC * math.sqrt(mask.sum())))
+    sl = _crop(mask, w)
+    ring = distance_transform_edt(~mask[sl]) <= w
+    ring &= ~mask[sl]
+    if blocked is not None:
+        ring &= ~blocked[sl]
+    n_ring = int(ring.sum())
+    if n_ring == 0:
+        return 0.0
+    lg = logits[sl]
+    band = ring & (lg >= threshold - EDGE_BAND_LOGITS) & (lg <= threshold)
+    return float(band.sum() / n_ring)
+
+
+def touches_border(mask):
+    """True if any mask pixel lies in the first/last row or column."""
+    return bool(mask[0].any() or mask[-1].any() or mask[:, 0].any() or mask[:, -1].any())
+
+
+def n_components(mask):
+    """Number of 8-connected components (8 like cv2.findContours' outlines)."""
+    import cv2
+
+    return int(cv2.connectedComponents(mask.astype(np.uint8), connectivity=8)[0] - 1)
+
+
 def size_flags(area_frac, tiny_frac, giant_frac):
     """Flag (never drop) instances whose area is suspiciously small or large."""
     flags = []
@@ -278,19 +484,22 @@ def segment_image(image, prompt, sam, detector, args):
     w, h = image.size
     if prompt == "center":
         boxes = scores = None
-        masks, iou = segment(model, processor, image, input_points=[[[w / 2, h / 2]]])
+        logits, iou = sam_logits(model, processor, image, input_points=[[[w / 2, h / 2]]])
     else:
         boxes, scores = detector(image)
         if len(boxes) == 0:
             return "no_detection"
-        masks, iou = segment(model, processor, image, input_boxes=[boxes.tolist()])
-    iou = iou[0].numpy()
-    masks, chosen = best_candidates(masks[0].numpy().astype(bool), iou)
+        logits, iou = sam_logits(model, processor, image, input_boxes=[boxes.tolist()])
+    masks, chosen, cand_areas = choose_candidates(logits, iou, args.mask_threshold, args.candidate)
+    # Only the chosen candidate's logits are needed later (edge feature).
+    chosen_logits = logits[np.arange(len(chosen)), chosen]
+    del logits
     n_detections = len(masks)
 
     def keep(idx):
-        nonlocal masks, boxes, scores, iou, chosen
+        nonlocal masks, boxes, scores, iou, chosen, cand_areas, chosen_logits
         masks, iou, chosen = masks[idx], iou[idx], chosen[idx]
+        cand_areas, chosen_logits = cand_areas[idx], chosen_logits[idx]
         boxes = boxes[idx] if boxes is not None else None
         scores = scores[idx] if scores is not None else None
 
@@ -312,8 +521,15 @@ def segment_image(image, prompt, sam, detector, args):
     keep(nonempty)
     if len(masks) == 0:
         return "all_masks_empty"
+
+    # Edge feature on the pre-margin masks; other fish are not "missing fin".
+    occupied = masks.any(axis=0)
+    edge_uncertain = [edge_uncertain_frac(m, lg, args.mask_threshold, blocked=occupied & ~m)
+                      for m, lg in zip(masks, chosen_logits)]
+    masks, margin_px = grow_margins(masks, args.margin_frac)
     return {
         "masks": masks, "boxes": boxes, "scores": scores, "iou": iou, "chosen": chosen,
+        "cand_areas": cand_areas, "edge_uncertain": edge_uncertain, "margin_px": margin_px,
         "n_detections": n_detections, "empty_dropped": empty_dropped,
         "dropped": [(b, s, new_index.get(j)) for b, s, j in dropped_info],
         "contested_frac": contested / img_area,
@@ -336,6 +552,16 @@ def build_record(rel_name, orig_size, work_size, result, args):
             "sam_iou_scores": [round(float(v), 4) for v in result["iou"][k]],
             "sam_mask_index": int(result["chosen"][k]),
             "flags": flags,
+            # QA features (areas/margin in working-resolution px, see module docstring).
+            # Candidate areas: raw SAM candidates; edge: pre-margin mask;
+            # border/components: the final mask as written (incl. margin).
+            "sam_candidate_areas": [int(a) for a in result["cand_areas"][k]],
+            "area_ratio_largest_to_chosen": round(float(result["cand_areas"][k].max()
+                                                        / result["cand_areas"][k][result["chosen"][k]]), 4),
+            "edge_uncertain_frac": round(result["edge_uncertain"][k], 4),
+            "touches_border": touches_border(m),
+            "n_components": n_components(m),
+            "margin_px": int(result["margin_px"][k]),
         })
         labels.append(" ".join([str(k)] + flags))
     image_flags = sorted({f for inst in instances for f in inst["flags"]})
@@ -377,12 +603,22 @@ def git_state():
         return {"git_commit": "unknown", "git_dirty": None}
 
 
-def run_settings(args):
-    """Everything that changes the masks - must be identical to resume a run."""
+def run_settings(args, image_names=None):
+    """Everything that changes the masks - must be identical to resume a run.
+
+    ``image_names``: the parsed --image-list (None = all images). Its hash
+    is stored, so resuming with an edited list is refused too (comments,
+    blank lines and line order don't count).
+    """
     settings = {
         "raw_dir": str(args.raw_dir), "prompt": args.prompt, "sam_checkpoint": SAM_CHECKPOINT,
         "max_side": args.max_side, "dedup_containment": args.dedup_containment,
         "tiny_area_frac": args.tiny_area_frac, "giant_area_frac": args.giant_area_frac,
+        "candidate": args.candidate, "mask_threshold": args.mask_threshold,
+        "margin_frac": args.margin_frac,
+        "image_list": str(Path(args.image_list).resolve()) if args.image_list is not None else None,
+        "image_list_sha256": (hashlib.sha256("\n".join(sorted(image_names)).encode()).hexdigest()
+                              if image_names is not None else None),
     }
     if args.prompt == "dino":
         settings.update(dino_checkpoint=DINO_CHECKPOINT, dino_text=args.dino_text,
@@ -393,11 +629,17 @@ def run_settings(args):
 
 
 def prepare_run_config(run_dir, settings, resume):
-    """Write run_config.json, or on --resume check the settings still match."""
+    """Write run_config.json, or on --resume check the settings still match.
+
+    A setting missing from an older run_config.json counts as its
+    LEGACY_DEFAULTS value (what that run implicitly used) and is written
+    back explicitly.
+    """
     cfg_path = run_dir / "run_config.json"
     session = {"started": datetime.datetime.now().isoformat(timespec="seconds"), **git_state()}
     if resume and cfg_path.exists():
         cfg = json.loads(cfg_path.read_text())
+        cfg["settings"] = {**{k: v for k, v in LEGACY_DEFAULTS.items() if k in settings}, **cfg["settings"]}
         changed = {k: (cfg["settings"].get(k), v) for k, v in settings.items() if cfg["settings"].get(k) != v}
         changed.update({k: (v, None) for k, v in cfg["settings"].items() if k not in settings})
         if changed:
@@ -510,6 +752,20 @@ def main():
     parser.add_argument("--max-side", type=int, default=2048,
                         help="Process at most this many px on the long side (SAM works at 1024 "
                              "anyway); outputs map back to original resolution. 0 = no limit.")
+    parser.add_argument("--candidate", choices=["score", "largest"], default="score",
+                        help="Which of SAM's 3 candidate masks to keep per prompt: highest predicted "
+                             "IoU (score, original behaviour) or most pixels after --mask-threshold "
+                             "(largest; tends to keep fins).")
+    parser.add_argument("--mask-threshold", type=float, default=0.0,
+                        help="Logit above which a pixel is in a SAM mask (0.0 = SAM's own cut). "
+                             "Lower, e.g. -2, recovers translucent fins. Tunable guess.")
+    parser.add_argument("--margin-frac", type=float, default=0.0,
+                        help="Grow each final instance by max(1, round(f*sqrt(area))) px, never into "
+                             "another instance. 0 = off. Tunable guess.")
+    parser.add_argument("--image-list", type=Path, default=None,
+                        help="Text file with one file name per line, relative to --raw-dir as in COCO "
+                             "file_name ('#' comment lines and blank lines ignored). Only these images "
+                             "are processed; names not found under --raw-dir are an error.")
     parser.add_argument("--resume", action="store_true",
                         help="Continue an interrupted run, skipping images already in annotations.jsonl.")
     args = parser.parse_args()
@@ -529,6 +785,14 @@ def main():
     if clashes:
         raise SystemExit(f"{len(clashes)} filename stem(s) occur more than once, e.g. {next(iter(clashes.values()))}")
 
+    rel_names = {p: p.relative_to(args.raw_dir).as_posix() for p in images}
+    image_names = None
+    if args.image_list is not None:
+        image_names = parse_image_list(args.image_list.read_text())
+        rel_names = select_images(rel_names, image_names)
+        images = list(rel_names)
+        print(f"--image-list: {len(images)} image(s) selected from {args.image_list}")
+
     # Nest outputs under the selected folder's name so processing several
     # folders (full_body/, Röntgen/, ...) never overwrites earlier runs.
     run_dir = args.out_dir / args.raw_dir.name
@@ -541,10 +805,9 @@ def main():
     if jsonl_path.exists() and not args.resume:
         raise SystemExit(f"{jsonl_path} already exists - pass --resume to continue that run, "
                          f"or delete {run_dir} to start over.")
-    prepare_run_config(run_dir, run_settings(args), args.resume)
+    prepare_run_config(run_dir, run_settings(args, image_names), args.resume)
     done = load_done(jsonl_path) if args.resume else {}
 
-    rel_names = {p: p.relative_to(args.raw_dir).as_posix() for p in images}
     todo = [p for p in images if rel_names[p] not in done]
     print(f"Found {len(images)} image(s) under {args.raw_dir}; {len(images) - len(todo)} already done, "
           f"{len(todo)} to process.")
@@ -602,7 +865,7 @@ def main():
     stale = [r for r in done if r not in current]
     if stale:
         print(f"  [warn] {len(stale)} record(s) in annotations.jsonl are for files no longer under "
-              f"{args.raw_dir}; left out of the COCO file.")
+              f"{args.raw_dir} (or not in --image-list); left out of the COCO file.")
     coco, skipped = write_outputs([r for k, r in done.items() if k in current], run_dir)
     print_summary(coco, skipped)
     print(f"Done. Wrote coco/annotations.json, skipped.txt, masks/ and overlays/ under {run_dir}")
