@@ -30,7 +30,8 @@ Prompting strategy (``--prompt``):
 Per image: detect -> SAM (3 candidates per prompt; threshold the mask logits
 at ``--mask-threshold``; keep one candidate per ``--candidate``) -> drop empty
 masks -> drop duplicate detections -> give every contested pixel to exactly
-one instance -> optionally grow each instance by a size-relative margin
+one instance -> optionally drop specks (``--min-component-frac``) ->
+optionally grow each instance by a size-relative margin
 (``--margin-frac``) -> flag tiny/giant instances. Every threshold is a CLI
 flag and a starting guess, to be tuned per domain (photo vs. X-ray) on real
 overlays - none of the defaults comes from the data.
@@ -44,6 +45,9 @@ the original behaviour, so a run with defaults reproduces the old masks:
     logits at working resolution; lower (e.g. -2) keeps translucent fins.
   * ``--margin-frac`` (default 0 = off) grows every final instance by
     r = max(1, round(margin_frac * sqrt(area))) px, never into another fish.
+  * ``--min-component-frac`` (default 0 = off) drops connected pieces of an
+    instance smaller than this fraction of it (low thresholds leave specks;
+    the largest piece always stays).
 
 Per-instance QA features (COCO annotation + annotations.jsonl), meant as
 inputs for the mask-QA model: ``sam_candidate_areas``,
@@ -112,7 +116,7 @@ EDGE_BAND_LOGITS = 3.0
 # A run_config.json written before they existed lacks them; resuming such a
 # run is allowed only with exactly these values.
 LEGACY_DEFAULTS = {"candidate": "score", "mask_threshold": 0.0, "margin_frac": 0.0,
-                   "image_list": None, "image_list_sha256": None}
+                   "min_component_frac": 0.0, "image_list": None, "image_list_sha256": None}
 
 
 def iter_images(root: Path):
@@ -328,6 +332,24 @@ def _crop(mask, pad):
             slice(max(0, xs.min() - pad), min(w, xs.max() + pad + 1)))
 
 
+def drop_small_components(mask, min_frac):
+    """Remove 8-connected pieces smaller than ``min_frac`` of the mask's area.
+
+    The largest piece always stays, so the mask never becomes empty.
+    min_frac <= 0 returns the mask unchanged (copy).
+    """
+    if min_frac <= 0:
+        return mask.copy()
+    import cv2
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    if n <= 2:  # background + at most one piece
+        return mask.copy()
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    keep = (areas >= min_frac * areas.sum()) | (areas == areas.max())
+    return np.isin(labels, 1 + np.nonzero(keep)[0])
+
+
 def grow_margins(masks, margin_frac):
     """Grow every instance by a size-relative margin without touching other fish.
 
@@ -522,6 +544,7 @@ def segment_image(image, prompt, sam, detector, args):
     if len(masks) == 0:
         return "all_masks_empty"
 
+    masks = np.stack([drop_small_components(m, args.min_component_frac) for m in masks])
     # Edge feature on the pre-margin masks; other fish are not "missing fin".
     occupied = masks.any(axis=0)
     edge_uncertain = [edge_uncertain_frac(m, lg, args.mask_threshold, blocked=occupied & ~m)
@@ -615,7 +638,7 @@ def run_settings(args, image_names=None):
         "max_side": args.max_side, "dedup_containment": args.dedup_containment,
         "tiny_area_frac": args.tiny_area_frac, "giant_area_frac": args.giant_area_frac,
         "candidate": args.candidate, "mask_threshold": args.mask_threshold,
-        "margin_frac": args.margin_frac,
+        "margin_frac": args.margin_frac, "min_component_frac": args.min_component_frac,
         "image_list": str(Path(args.image_list).resolve()) if args.image_list is not None else None,
         "image_list_sha256": (hashlib.sha256("\n".join(sorted(image_names)).encode()).hexdigest()
                               if image_names is not None else None),
@@ -762,6 +785,9 @@ def main():
     parser.add_argument("--margin-frac", type=float, default=0.0,
                         help="Grow each final instance by max(1, round(f*sqrt(area))) px, never into "
                              "another instance. 0 = off. Tunable guess.")
+    parser.add_argument("--min-component-frac", type=float, default=0.0,
+                        help="Drop connected pieces of an instance smaller than this fraction of its "
+                             "area (the largest piece always stays). 0 = off. Tunable guess.")
     parser.add_argument("--image-list", type=Path, default=None,
                         help="Text file with one file name per line, relative to --raw-dir as in COCO "
                              "file_name ('#' comment lines and blank lines ignored). Only these images "

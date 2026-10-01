@@ -152,6 +152,20 @@ def test_border_and_components():
     assert sf.n_components(d) == 1
 
 
+def test_drop_small_components_keeps_largest_and_big_pieces():
+    m = rect_mask(50, 50, 5, 5, 25, 25)    # 400 px fish
+    m[40:44, 40:44] = True                 # 16 px piece (~3.8 %)
+    m[1, 48] = True                        # 1 px speck
+    assert (sf.drop_small_components(m, 0.0) == m).all()
+    out = sf.drop_small_components(m, 0.01)
+    assert out[40:44, 40:44].all() and not out[1, 48] and out[5:25, 5:25].all()
+    out = sf.drop_small_components(m, 0.5)  # only the largest piece survives
+    assert out.sum() == 400
+    speck = np.zeros((10, 10), bool)
+    speck[3, 3] = True
+    assert (sf.drop_small_components(speck, 0.9) == speck).all()  # never empties a mask
+
+
 def test_parse_image_list_skips_comments_blanks_and_repeats():
     text = "# dev set v1\n\n  a.jpg  \nsub/b.jpg\n# c.jpg\na.jpg\n"
     assert sf.parse_image_list(text) == ["a.jpg", "sub/b.jpg"]
@@ -172,7 +186,8 @@ def default_args(**kw):
     from types import SimpleNamespace
 
     a = dict(raw_dir="raw", prompt="center", max_side=2048, dedup_containment=0.8, tiny_area_frac=0.001,
-             giant_area_frac=0.9, candidate="score", mask_threshold=0.0, margin_frac=0.0, image_list=None)
+             giant_area_frac=0.9, candidate="score", mask_threshold=0.0, margin_frac=0.0, min_component_frac=0.0,
+             image_list=None)
     a.update(kw)
     return SimpleNamespace(**a)
 
@@ -198,6 +213,7 @@ def test_resume_of_pre_option_run_accepts_defaults_only():
         cfg = json.loads((run_dir / "run_config.json").read_text())
         assert cfg["settings"]["candidate"] == "score"  # written back explicitly
         for changed in (dict(candidate="largest"), dict(mask_threshold=-2.0), dict(margin_frac=0.03),
+                        dict(min_component_frac=0.01),
                         dict(image_list=Path("dev.txt"))):
             try:
                 sf.prepare_run_config(run_dir, sf.run_settings(default_args(**changed),
