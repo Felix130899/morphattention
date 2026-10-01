@@ -11,13 +11,13 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 
 ## Current state
 - Masks: decided setting = B (`--mask-threshold -1 --min-component-frac 0.01`) + 3 % margin applied when building training images; blind dev-set review: fix rate 39 → 23 % photos, 36 → 22 % X-rays, cut fins nearly gone (vault/thesis-log/decisions/2026-10-01-fin-fix-setting.md + results HTML next to it)
-- Margin ring test passed (`scripts/margin_ring_test.py`, DINOv2 linear probe): margin adds no genus info beyond the outline; background alone predicts genus at 71 % / 61 % → masking is necessary
+- Margin ring test passed (`scripts/margin_ring_test.py`, DINOv2 linear probe): margin adds no genus info beyond the outline; background alone predicts genus at 71 % / 61 % → masking is necessary. Record: vault/thesis-log/experiments/2026-10-01-margin-ring-test.md; frozen archive `data/archive/2026-10-01_margin_ring_test/`; git tag `margin-ring-test-2026-10-01`
 - `segment_fish.py`: `--candidate/--mask-threshold/--margin-frac/--min-component-frac/--image-list` + per-instance QA features; `review_masks.py`: categories (keys 1–6) + blind `--compare` mode + `--summary`. Mask policy: vault/thesis-log/decisions/2026-10-01-mask-policy.md
 - Old full run (2026-09-24, `data/processed/segmented/{full_body,Röntgen}/`) is superseded; code checkpoint before the fin fix: git tag `pre-fin-fix-2026-10-01`
 - NHM dataset: 16,942 images (Kopie duplicates removed), `labels.csv` matches (9 rows need review, origin unconfirmed); split train/test by NMW specimen number
 
 ## Next steps
-1. Full re-run with setting B (no margin) over `full_body` and `Röntgen` into a new run dir under `data/processed/segmented/` (pattern: `data/processed/devset_fin_fix/run_devset.sh`, ~2 h)
+1. Full re-run with setting B is RUNNING (started 2026-10-01 15:25, detached): `data/processed/segmented/B_full_2026-10-01/`; progress `status.sh`, log `full_run.log`, resume `run.sh`. When done: check `skipped.txt` + QA flag counts
 2. Look at C's remaining non-fin errors (photos: 9 wrong_object, several catfish `_HOLOTYPE_…_SL…` images, + 4 missed_fish; X-rays: 9 bleed); lists in the results HTML
 3. Random review sample per domain (~1,000 each, excluding `data/processed/devset_fin_fix/` images) with `review_masks.py --image-list`, then train the QA model (QA features + DINOv2 crop embedding) and rank all masks
 - Full checklist: vault/thesis-log/tasks/clean-segmented-dataset-with-structured-labels.md
