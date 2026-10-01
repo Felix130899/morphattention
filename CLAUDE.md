@@ -17,9 +17,9 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 - NHM dataset: 16,942 images (Kopie duplicates removed), `labels.csv` matches (9 rows need review, origin unconfirmed); split train/test by NMW specimen number
 
 ## Next steps
-1. Review the suspected whole-background bleed (masks incl. printed names): `python scripts/review_masks.py --run-dir data/processed/segmented/B_full_2026-10-01/<full_body|Röntgen> --image-list <run-dir>/suspect_bleed.txt` (197 photos, 392 X-rays; from `scripts/flag_bleed.py`)
-2. Then fix them in the generator (e.g. fall back to a smaller SAM candidate when masks cover > 70 % + touch the border) and re-run only those images; also look at C's non-fin errors (photos: 9 wrong_object, catfish `_HOLOTYPE_…_SL…` series; lists in the results HTML)
-3. Random review sample per domain (~1,000 each, excluding the dev set) with `review_masks.py --image-list`, then train the QA model and rank all masks
+1. Neo: review the suspected whole-background bleed. Why: 197 photos / 392 X-rays have masks covering > 70 % of the image + touching the border, mostly incl. the printed names (= the Clever Hans shortcut masking should remove). How: `python scripts/review_masks.py --run-dir data/processed/segmented/B_full_2026-10-01/<full_body|Röntgen> --image-list <run-dir>/suspect_bleed.txt`; `2` = bleed, `→` = OK → `<run-dir>/review/fix.txt`
+2. Then: add a bleed fallback to `segment_fish.py` (e.g. `--max-cover 0.7` → retry with a smaller SAM candidate / clip to the box), re-run only `<run-dir>/review/fix.txt` via `--image-list` into `data/processed/segmented/B_bleedfix/`, compare blind with `review_masks.py --compare`, merge back (exact commands in the task file)
+3. Afterwards: C's non-fin errors (photos wrong_object, catfish `_HOLOTYPE_…_SL…` series), then random review sample per domain → QA model
 - Full checklist: vault/thesis-log/tasks/clean-segmented-dataset-with-structured-labels.md
 
 ## Detailed log
