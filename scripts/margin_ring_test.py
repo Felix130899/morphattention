@@ -328,14 +328,19 @@ def evaluate(args):
         correct[v] = pred == y
         k = int(correct[v].sum())
         test = binomtest(k, len(y), chance, alternative="greater")
-        ci = test.proportion_ci(confidence_level=0.95, method="wilson")
+        # two-sided CI (the one-sided test's CI would end at 100 %)
+        ci = binomtest(k, len(y)).proportion_ci(confidence_level=0.95, method="wilson")
         results[v] = {"accuracy": k / len(y), "ci_low": ci.low, "ci_high": ci.high,
                       "balanced_accuracy": balanced_accuracy_score(y, pred), "p_vs_chance": test.pvalue}
 
     pairs = {}
     for a, b in (("outer", "outer_shape"), ("ring", "ring_shape"), ("fish_ring", "fish")):
         a_only, b_only, p = exact_mcnemar(correct[a], correct[b])
-        pairs[f"{a}_vs_{b}"] = {"diff": results[a]["accuracy"] - results[b]["accuracy"],
+        n = len(y)
+        # 95 % Wald CI of a paired difference in accuracy
+        half = 1.96 * np.sqrt(max(a_only + b_only - (a_only - b_only) ** 2 / n, 0)) / n
+        diff = results[a]["accuracy"] - results[b]["accuracy"]
+        pairs[f"{a}_vs_{b}"] = {"diff": diff, "ci_low": diff - half, "ci_high": diff + half,
                                 f"only_{a}_right": a_only, f"only_{b}_right": b_only, "p": p}
 
     control_ok = results["background"]["p_vs_chance"] < 0.05
@@ -356,7 +361,8 @@ def evaluate(args):
     print()
     for name, pr in pairs.items():
         a, b = name.split("_vs_")
-        print(f"{name:<22} diff {pr['diff']:+.1%}  ({pr[f'only_{a}_right']} vs {pr[f'only_{b}_right']} "
+        print(f"{name:<22} diff {pr['diff']:+.1%} [{pr['ci_low']:+.1%}, {pr['ci_high']:+.1%}]  "
+              f"({pr[f'only_{a}_right']} vs {pr[f'only_{b}_right']} "
               f"images right only by one)  McNemar p = {pr['p']:.3g}")
     print(f"\nVerdict: {verdict}")
 
