@@ -13,11 +13,18 @@ Which images to take:
     given to the patch run in ``--compare RUN=...``)
 Both can be combined (union). Every taken image must be "ok" in the patch run.
 
+``--drop FILE`` (optional): images excluded from the curated set, one per
+line as ``file_name<TAB>reason``. Their record becomes
+``{"status": "dropped", "reason": ...}``: no COCO annotation, no mask or
+overlay in ``--out`` (the base run still has them), listed in dropped.txt.
+A name can't be both taken and dropped.
+
 Output (same layout as segment_fish.py, so review_masks.py etc. work on it):
     annotations.jsonl, coco/annotations.json, skipped.txt   rebuilt
     masks/, overlays/   hard links to the base/patch files (copies across filesystems)
     run_config.json     both inputs' configs, the taken list + its sha256, git state
     merged_from_patch.txt   the taken file names
+    dropped.txt         file_name<TAB>reason of every dropped image
 
     python scripts/merge_runs.py \\
         --base data/processed/segmented/B_full_2026-10-01/full_body \\
@@ -82,6 +89,29 @@ def merge_records(base, patch, take):
     return {name: (patch[name] if name in take else rec) for name, rec in base.items()}
 
 
+def read_drop_list(text):
+    """{file_name: reason} from ``file_name<TAB>reason`` lines (reason optional;
+    ``#`` comment lines and blank lines ignored)."""
+    drops = {}
+    for line in text.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        name, _, reason = line.partition("\t")
+        drops[name.strip()] = reason.strip() or "dropped"
+    return drops
+
+
+def apply_drops(merged, drops, take):
+    """Mark every dropped image's record as dropped. Fails on unknown names or
+    names that are also taken from the patch."""
+    problems = [f"{n}: not in base run" for n in drops if n not in merged]
+    problems += [f"{n}: also in the take list" for n in drops if n in set(take)]
+    if problems:
+        raise SystemExit(f"{len(problems)} problem(s) with the dropped images:\n  " + "\n  ".join(problems))
+    return {name: ({"file_name": name, "status": "dropped", "reason": drops[name]} if name in drops else rec)
+            for name, rec in merged.items()}
+
+
 def link_or_copy(src, dst):
     try:
         os.link(src, dst)
@@ -96,6 +126,7 @@ def main():
     parser.add_argument("--take", type=Path, help="file with the names to take from --patch")
     parser.add_argument("--take-ok-from", metavar="REVIEW_DIR:RUN",
                         help="take every image judged ok for RUN in this compare-mode review dir")
+    parser.add_argument("--drop", type=Path, help="file_name<TAB>reason lines: exclude these images")
     parser.add_argument("--out", type=Path, required=True, help="new run dir (must not exist)")
     args = parser.parse_args()
     if args.take is None and args.take_ok_from is None:
@@ -114,6 +145,8 @@ def main():
     base = read_records(args.base)
     patch = read_records(args.patch)
     merged = merge_records(base, patch, take)
+    drops = read_drop_list(args.drop.read_text()) if args.drop is not None else {}
+    merged = apply_drops(merged, drops, take)
 
     for d in ("masks", "overlays", "coco"):
         (args.out / d).mkdir(parents=True)
@@ -128,12 +161,14 @@ def main():
     (args.out / "annotations.jsonl").write_text("".join(json.dumps(r) + "\n" for r in merged.values()))
     coco, skipped = write_outputs(list(merged.values()), args.out)
     (args.out / "merged_from_patch.txt").write_text("".join(n + "\n" for n in take))
+    (args.out / "dropped.txt").write_text("".join(f"{n}\t{r}\n" for n, r in sorted(drops.items())))
     cfg = {
         "merged": {
             "created": datetime.datetime.now().isoformat(timespec="seconds"), **git_state(),
             "base": str(args.base), "patch": str(args.patch),
             "take": str(args.take) if args.take else None, "take_ok_from": args.take_ok_from,
             "n_taken": len(take), "taken_sha256": hashlib.sha256("\n".join(take).encode()).hexdigest(),
+            "drop": str(args.drop) if args.drop else None, "n_dropped": len(drops),
         },
         "base_config": json.loads((args.base / "run_config.json").read_text()),
         "patch_config": json.loads((args.patch / "run_config.json").read_text()),
@@ -141,7 +176,8 @@ def main():
         "settings": {"raw_dir": json.loads((args.base / "run_config.json").read_text())["settings"]["raw_dir"]},
     }
     (args.out / "run_config.json").write_text(json.dumps(cfg, indent=2))
-    print(f"Took {len(take)} image(s) from {args.patch}, {len(merged) - len(take)} from {args.base}.")
+    print(f"Took {len(take)} image(s) from {args.patch}, dropped {len(drops)}, "
+          f"{len(merged) - len(take) - len(drops)} unchanged from {args.base}.")
     print_summary(coco, skipped)
 
 

@@ -91,6 +91,40 @@ def test_cli_end_to_end_leaves_inputs_untouched():
         assert all(p.read_bytes() == b for p, b in before.items())  # inputs unchanged
 
 
+
+def test_drop_list_and_drops():
+    drops = mr.read_drop_list("# header\na.jpg\tafter fallback: bleed\nb.jpg\n\n")
+    assert drops == {"a.jpg": "after fallback: bleed", "b.jpg": "dropped"}
+    merged = {n: rec(n, "base") for n in ("a.jpg", "b.jpg", "c.jpg")}
+    out = mr.apply_drops(merged, {"a.jpg": "bleed"}, take=["c.jpg"])
+    assert out["a.jpg"] == {"file_name": "a.jpg", "status": "dropped", "reason": "bleed"}
+    assert out["b.jpg"]["status"] == "ok"
+    for bad in ({"z.jpg": "x"}, {"c.jpg": "x"}):  # unknown / also taken
+        try:
+            mr.apply_drops(merged, bad, take=["c.jpg"])
+        except SystemExit:
+            continue
+        raise AssertionError(f"drop {bad} was accepted")
+
+
+def test_cli_drop_excludes_from_coco_and_masks():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        base = fake_run(d / "base", [rec("a.jpg", "base"), rec("b.jpg", "base"), rec("c.jpg", "base")])
+        patch = fake_run(d / "patch", [rec("a.jpg", "patch")])
+        (d / "take.txt").write_text("a.jpg\n")
+        (d / "drop.txt").write_text("b.jpg\tstill bleeds\n")
+        subprocess.run([sys.executable, str(SCRIPT), "--base", str(base), "--patch", str(patch),
+                        "--take", str(d / "take.txt"), "--drop", str(d / "drop.txt"), "--out", str(d / "out")],
+                       check=True, capture_output=True)
+        out = d / "out"
+        coco = json.loads((out / "coco" / "annotations.json").read_text())
+        assert [i["file_name"] for i in coco["images"]] == ["a.jpg", "c.jpg"]
+        assert not (out / "masks" / "b.png").exists() and (base / "masks" / "b.png").exists()
+        assert (out / "dropped.txt").read_text() == "b.jpg\tstill bleeds\n"
+        assert (out / "skipped.txt").read_text() == ""
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in list(globals().items()) if name.startswith("test_")]
     for name, fn in tests:
