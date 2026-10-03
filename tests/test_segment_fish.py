@@ -187,7 +187,8 @@ def default_args(**kw):
 
     a = dict(raw_dir="raw", prompt="center", max_side=2048, dedup_containment=0.8, tiny_area_frac=0.001,
              giant_area_frac=0.9, candidate="score", mask_threshold=0.0, margin_frac=0.0, min_component_frac=0.0,
-             image_list=None)
+             image_list=None, bleed_outside_frac=0.0, bleed_fill=(0.2, 0.9), bleed_bg_border=0.3,
+             bleed_max_box_edge=0.1)
     a.update(kw)
     return SimpleNamespace(**a)
 
@@ -213,7 +214,7 @@ def test_resume_of_pre_option_run_accepts_defaults_only():
         cfg = json.loads((run_dir / "run_config.json").read_text())
         assert cfg["settings"]["candidate"] == "score"  # written back explicitly
         for changed in (dict(candidate="largest"), dict(mask_threshold=-2.0), dict(margin_frac=0.03),
-                        dict(min_component_frac=0.01),
+                        dict(min_component_frac=0.01), dict(bleed_outside_frac=0.02),
                         dict(image_list=Path("dev.txt"))):
             try:
                 sf.prepare_run_config(run_dir, sf.run_settings(default_args(**changed),
@@ -326,6 +327,95 @@ def test_resume_with_changed_settings_is_refused():
         except SystemExit:
             return
         raise AssertionError("resume with different settings was accepted")
+
+
+# --- bleed fallback -------------------------------------------------------
+# 100x100 image, detector box (20, 20)-(80, 60): a fish-shaped mask inside it,
+# a bleed that fills the box and spills into the background, and the
+# background itself (everything but the fish).
+BOX = np.array([20, 20, 80, 60], float)
+FISH = rect_mask(100, 100, 25, 30, 75, 50)   # fills 1000/2400 of the box
+BLEED = rect_mask(100, 100, 0, 0, 100, 100)
+BACKGROUND = BLEED & ~FISH
+
+
+def bleed_args(**kw):
+    return default_args(bleed_outside_frac=0.02, **kw)
+
+
+def test_box_fit():
+    assert sf.box_fit(FISH, BOX) == (0.0, 1000 / 2400)
+    out, fill = sf.box_fit(BLEED, BOX)
+    assert fill == 1.0 and abs(out - (1 - 2400 / 10000)) < 1e-9
+
+
+def test_bleed_fallback_off_or_not_triggered_keeps_choice():
+    cands = np.stack([BLEED, FISH, BACKGROUND])
+    m, src, k, inv = sf.bleed_fallback(cands, 0, BOX, default_args())  # off
+    assert src == "none" and k == 0 and (m == BLEED).all()
+    m, src, k, inv = sf.bleed_fallback(cands, 1, BOX, bleed_args())  # fish chosen: inside the box
+    assert src == "none" and k == 1
+
+
+def test_bleed_fallback_takes_the_candidate_inside_the_box():
+    cands = np.stack([BLEED, FISH, BACKGROUND])
+    m, src, k, inv = sf.bleed_fallback(cands, 0, BOX, bleed_args())
+    assert src == "candidate" and k == 1 and not inv and (m == FISH).all()
+
+
+def test_bleed_fallback_prefers_the_largest_valid_candidate():
+    with_fins = rect_mask(100, 100, 22, 25, 78, 55)  # fills 1680/2400 = 0.7
+    cands = np.stack([BLEED, FISH, with_fins])
+    _, src, k, _ = sf.bleed_fallback(cands, 0, BOX, bleed_args())
+    assert src == "candidate" and k == 2
+
+
+def test_bleed_fallback_rejects_box_shaped_and_tiny_candidates():
+    box_blob = rect_mask(100, 100, 20, 20, 80, 60)   # fills the box: bleed inside it
+    eye = rect_mask(100, 100, 30, 35, 35, 40)        # fills 25/2400
+    cands = np.stack([BLEED, box_blob, eye])
+    m, src, k, _ = sf.bleed_fallback(cands, 0, BOX, bleed_args())
+    assert src == "unresolved" and k == 0 and (m == BLEED).all()
+
+
+def test_bleed_fallback_inverts_a_background_candidate():
+    eye = rect_mask(100, 100, 30, 35, 35, 40)
+    cands = np.stack([BLEED, eye, BACKGROUND])  # SAM never returned the fish itself
+    m, src, k, inv = sf.bleed_fallback(cands, 0, BOX, bleed_args())
+    assert src == "inverse" and k == 2 and inv and (m == FISH).all()
+
+
+def test_bleed_fallback_inverse_drops_text_specks_and_needs_a_background_candidate():
+    eye = rect_mask(100, 100, 30, 35, 35, 40)
+    text = rect_mask(100, 100, 70, 55, 72, 57)  # a printed letter inside the box
+    cands = np.stack([BLEED, eye, BACKGROUND & ~text])
+    m, src, _, _ = sf.bleed_fallback(cands, 0, BOX, bleed_args())
+    assert src == "inverse" and (m == FISH).all()
+    # Not background-like (covers little of the frame): never inverted.
+    m, src, _, _ = sf.bleed_fallback(cands, 0, BOX, bleed_args(bleed_bg_border=1.01))
+    assert src == "unresolved"
+
+
+
+def test_box_edge_frac():
+    assert sf.box_edge_frac(FISH, BOX) == 0.0
+    assert sf.box_edge_frac(BLEED, BOX) == 1.0
+
+
+def test_inverse_pieces_drops_border_pieces_but_keeps_inner_ones():
+    corner = rect_mask(100, 100, 0, 0, 10, 10)     # canvas corner: touches the border
+    fin = rect_mask(100, 100, 80, 35, 85, 45)      # detached piece inside the image
+    out = sf.inverse_pieces(FISH | corner | fin, 0.01)
+    assert (out == (FISH | fin)).all()
+
+
+def test_bleed_fallback_rejects_inverse_running_along_the_box_edge():
+    eye = rect_mask(100, 100, 30, 35, 35, 40)
+    in_box_bg = rect_mask(100, 100, 20, 20, 80, 60) & ~FISH  # background left inside the box
+    inv_source = BLEED & ~in_box_bg                           # its inverse = in-box background
+    cands = np.stack([BLEED, eye, inv_source])
+    _, src, _, _ = sf.bleed_fallback(cands, 0, BOX, bleed_args())
+    assert src == "unresolved"
 
 
 if __name__ == "__main__":

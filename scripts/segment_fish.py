@@ -55,6 +55,14 @@ inputs for the mask-QA model: ``sam_candidate_areas``,
 see ``edge_uncertain_frac()``), ``touches_border``, ``n_components``,
 ``margin_px``. Areas and ``margin_px`` are in working-resolution pixels.
 
+Bleed fallback (``--bleed-outside-frac``, default 0 = off): SAM sometimes
+picks a candidate that fills the whole background, printed names included.
+Such a mask spills out of its detector box; when it does, a SAM candidate
+that stays inside the box is used instead, or the inverse of a background
+candidate. Instances record ``bleed_fallback`` (none / candidate / inverse /
+unresolved), ``sam_outside_box_frac`` and ``outside_box_frac``; flags
+``bleed_fixed`` / ``bleed_unresolved``. See ``bleed_fallback()``.
+
 ``--image-list`` restricts a run to the listed files (e.g. a dev set), one
 path per line relative to ``--raw-dir`` as in COCO ``file_name``.
 
@@ -112,11 +120,19 @@ PALETTE = [
 EDGE_RING_FRAC = 0.02
 EDGE_BAND_LOGITS = 3.0
 
+# bleed_fallback(): an inverted background candidate is cut to the detector
+# box grown by this fraction of its width/height (DINO boxes can be tight on
+# fins); besides its largest piece, inverse_pieces() keeps only pieces of at
+# least this fraction of it (drops printed letters, specks).
+BLEED_BOX_PAD = 0.02
+BLEED_INVERSE_SPECK_FRAC = 0.05
+
 # Settings added after the first full run, with the value that reproduces it.
 # A run_config.json written before they existed lacks them; resuming such a
 # run is allowed only with exactly these values.
 LEGACY_DEFAULTS = {"candidate": "score", "mask_threshold": 0.0, "margin_frac": 0.0,
-                   "min_component_frac": 0.0, "image_list": None, "image_list_sha256": None}
+                   "min_component_frac": 0.0, "image_list": None, "image_list_sha256": None,
+                   "bleed_outside_frac": 0.0}
 
 
 def iter_images(root: Path):
@@ -236,6 +252,117 @@ def choose_candidates(logits, iou_scores, threshold=0.0, rule="score"):
     else:
         raise ValueError(f"unknown candidate rule {rule!r}")
     return candidates[np.arange(len(chosen)), chosen], chosen, areas
+
+
+def box_slices(box, shape, pad=0.0):
+    """Row/column slices of an xyxy box grown by ``pad`` x its width/height, clipped to ``shape``."""
+    x0, y0, x1, y1 = box
+    px, py = pad * (x1 - x0), pad * (y1 - y0)
+    h, w = shape
+    return (slice(max(0, int(math.floor(y0 - py))), min(h, int(math.ceil(y1 + py)))),
+            slice(max(0, int(math.floor(x0 - px))), min(w, int(math.ceil(x1 + px)))))
+
+
+def box_fit(mask, box):
+    """(outside_box_frac, box_fill) of a mask against its detector box (xyxy).
+
+    outside_box_frac = share of the mask's pixels outside the box; box_fill =
+    share of the box's pixels inside the mask. A fish mask sits inside its
+    box (outside ~0, fins aside) and fills part of it; a mask that bled into
+    the background spills out of the box and fills it almost completely.
+    """
+    sl = box_slices(box, mask.shape)
+    inside = int(mask[sl].sum())
+    area = int(mask.sum())
+    box_px = (sl[0].stop - sl[0].start) * (sl[1].stop - sl[1].start)
+    return ((area - inside) / area if area else 0.0), (inside / box_px if box_px else 0.0)
+
+
+def box_edge_frac(mask, box):
+    """Share of the detector box's outline (1 px, clipped to the image) covered by ``mask``.
+
+    A fish touches its box at its tips; background left inside the box runs
+    along the box edges.
+    """
+    sl = box_slices(box, mask.shape)
+    inner = mask[sl]
+    if inner.size == 0:
+        return 0.0
+    edge = np.concatenate([inner[0], inner[-1], inner[1:-1, 0], inner[1:-1, -1]])
+    return float(edge.mean())
+
+
+def inverse_pieces(inv, min_frac):
+    """Clean an inverted background candidate: keep its largest piece, plus other
+    pieces >= ``min_frac`` of it that do not touch the image border (corners of
+    the X-ray canvas, labels and rulers at the image edge do)."""
+    import cv2
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(inv.astype(np.uint8), connectivity=8)
+    if n <= 2:
+        return inv.copy()
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    h, w = inv.shape
+    x, y = stats[1:, cv2.CC_STAT_LEFT], stats[1:, cv2.CC_STAT_TOP]
+    on_border = (x == 0) | (y == 0) | (x + stats[1:, cv2.CC_STAT_WIDTH] == w) | (y + stats[1:, cv2.CC_STAT_HEIGHT] == h)
+    keep = (areas == areas.max()) | ((areas >= min_frac * areas.sum()) & ~on_border)
+    return np.isin(labels, 1 + np.nonzero(keep)[0])
+
+
+def bleed_fallback(candidates, chosen, box, args):
+    """Replace a mask that bled into the background by a better one from the same SAM call.
+
+    Trigger: the chosen candidate has more than ``--bleed-outside-frac`` of
+    its pixels outside the detector box. Then, in this order:
+      1. the largest of SAM's 3 candidates that stays inside the box
+         (outside <= the same limit) and fills ``--bleed-fill`` MIN..MAX of
+         it. MAX rejects the box-shaped blob a bleed leaves inside the box,
+         MIN rejects an eye or a vertebra;
+      2. the inverse of a background-like candidate (it covers >=
+         ``--bleed-bg-border`` of the image frame): its complement inside
+         the box grown by BLEED_BOX_PAD, cleaned by inverse_pieces(). SAM
+         sometimes returns only the background, never the fish. Same limits,
+         and it may cover at most ``--bleed-max-box-edge`` of the box outline
+         (else it is background/labels left inside the box);
+      3. otherwise the chosen candidate stays, marked unresolved.
+    Reasoning and the numbers behind the defaults:
+    vault/thesis-log/experiments/2026-10-03-bleed-fallback.md
+
+    candidates: (3, H, W) bool; box: xyxy at working resolution.
+    Returns (mask, source, candidate index, inverted) with source one of
+    "none" (not triggered), "candidate", "inverse", "unresolved".
+    """
+    outside, _ = box_fit(candidates[chosen], box)
+    if args.bleed_outside_frac <= 0 or outside <= args.bleed_outside_frac:
+        return candidates[chosen], "none", chosen, False
+    lo, hi = args.bleed_fill
+
+    def valid(mask):
+        if not mask.any():
+            return False
+        out, fill = box_fit(mask, box)
+        return out <= args.bleed_outside_frac and lo <= fill <= hi
+
+    fits = [k for k in range(len(candidates)) if valid(candidates[k])]
+    if fits:
+        k = max(fits, key=lambda k: candidates[k].sum())
+        return candidates[k], "candidate", k, False
+
+    sl = box_slices(box, candidates.shape[1:], BLEED_BOX_PAD)
+    inverses = []
+    for k, cand in enumerate(candidates):
+        frame = np.concatenate([cand[0], cand[-1], cand[:, 0], cand[:, -1]])
+        if frame.mean() < args.bleed_bg_border:
+            continue
+        inv = np.zeros_like(cand)
+        inv[sl] = ~cand[sl]
+        inv = inverse_pieces(inv, BLEED_INVERSE_SPECK_FRAC)
+        if valid(inv) and box_edge_frac(inv, box) <= args.bleed_max_box_edge:
+            inverses.append((int(inv.sum()), k, inv))
+    if inverses:
+        _, k, inv = max(inverses, key=lambda t: t[0])
+        return inv, "inverse", k, True
+    return candidates[chosen], "unresolved", chosen, False
 
 
 def mask_containment(inner, outer):
@@ -513,15 +640,30 @@ def segment_image(image, prompt, sam, detector, args):
             return "no_detection"
         logits, iou = sam_logits(model, processor, image, input_boxes=[boxes.tolist()])
     masks, chosen, cand_areas = choose_candidates(logits, iou, args.mask_threshold, args.candidate)
+    n_detections = len(masks)
+    # Edge feature threshold per instance: an inverted candidate is "in" where
+    # its negated logits are >= -threshold (see bleed_fallback()).
+    edge_thr = np.full(n_detections, args.mask_threshold)
+    bleed_source = np.array(["none"] * n_detections, dtype=object)
+    chosen_outside = np.array([box_fit(m, b)[0] for m, b in zip(masks, boxes)] if boxes is not None
+                              else [0.0] * n_detections)
+    inverted = np.zeros(n_detections, dtype=bool)
+    if boxes is not None and args.bleed_outside_frac > 0:
+        for k in range(n_detections):
+            masks[k], bleed_source[k], chosen[k], inverted[k] = bleed_fallback(
+                logits[k] > args.mask_threshold, chosen[k], boxes[k], args)
     # Only the chosen candidate's logits are needed later (edge feature).
     chosen_logits = logits[np.arange(len(chosen)), chosen]
+    chosen_logits[inverted] *= -1
+    edge_thr[inverted] *= -1
     del logits
-    n_detections = len(masks)
 
     def keep(idx):
         nonlocal masks, boxes, scores, iou, chosen, cand_areas, chosen_logits
+        nonlocal edge_thr, bleed_source, chosen_outside
         masks, iou, chosen = masks[idx], iou[idx], chosen[idx]
         cand_areas, chosen_logits = cand_areas[idx], chosen_logits[idx]
+        edge_thr, bleed_source, chosen_outside = edge_thr[idx], bleed_source[idx], chosen_outside[idx]
         boxes = boxes[idx] if boxes is not None else None
         scores = scores[idx] if scores is not None else None
 
@@ -547,12 +689,13 @@ def segment_image(image, prompt, sam, detector, args):
     masks = np.stack([drop_small_components(m, args.min_component_frac) for m in masks])
     # Edge feature on the pre-margin masks; other fish are not "missing fin".
     occupied = masks.any(axis=0)
-    edge_uncertain = [edge_uncertain_frac(m, lg, args.mask_threshold, blocked=occupied & ~m)
-                      for m, lg in zip(masks, chosen_logits)]
+    edge_uncertain = [edge_uncertain_frac(m, lg, thr, blocked=occupied & ~m)
+                      for m, lg, thr in zip(masks, chosen_logits, edge_thr)]
     masks, margin_px = grow_margins(masks, args.margin_frac)
     return {
         "masks": masks, "boxes": boxes, "scores": scores, "iou": iou, "chosen": chosen,
         "cand_areas": cand_areas, "edge_uncertain": edge_uncertain, "margin_px": margin_px,
+        "bleed_source": list(bleed_source), "chosen_outside": chosen_outside,
         "n_detections": n_detections, "empty_dropped": empty_dropped,
         "dropped": [(b, s, new_index.get(j)) for b, s, j in dropped_info],
         "contested_frac": contested / img_area,
@@ -585,8 +728,20 @@ def build_record(rel_name, orig_size, work_size, result, args):
             "touches_border": touches_border(m),
             "n_components": n_components(m),
             "margin_px": int(result["margin_px"][k]),
+            # Bleed: share outside the detector box of SAM's own choice
+            # (before the fallback) and of the final mask; which fallback ran.
+            "sam_outside_box_frac": round(float(result["chosen_outside"][k]), 4),
+            "outside_box_frac": (round(box_fit(m, result["boxes"][k])[0], 4)
+                                 if result["boxes"] is not None else None),
+            "bleed_fallback": result["bleed_source"][k],
         })
-        labels.append(" ".join([str(k)] + flags))
+        if result["bleed_source"][k] in ("candidate", "inverse"):
+            flags.append("bleed_fixed")
+        elif result["bleed_source"][k] == "unresolved":
+            flags.append("bleed_unresolved")
+        # Bleed flags stay off the overlay: they would tell a blind
+        # review_masks.py --compare which run an overlay comes from.
+        labels.append(" ".join([str(k)] + [f for f in flags if not f.startswith("bleed_")]))
     image_flags = sorted({f for inst in instances for f in inst["flags"]})
     if len(instances) > 1:
         image_flags.append("multi_instance")
@@ -639,10 +794,15 @@ def run_settings(args, image_names=None):
         "tiny_area_frac": args.tiny_area_frac, "giant_area_frac": args.giant_area_frac,
         "candidate": args.candidate, "mask_threshold": args.mask_threshold,
         "margin_frac": args.margin_frac, "min_component_frac": args.min_component_frac,
+        "bleed_outside_frac": args.bleed_outside_frac,
         "image_list": str(Path(args.image_list).resolve()) if args.image_list is not None else None,
         "image_list_sha256": (hashlib.sha256("\n".join(sorted(image_names)).encode()).hexdigest()
                               if image_names is not None else None),
     }
+    if args.bleed_outside_frac > 0:
+        settings.update(bleed_fill=list(args.bleed_fill), bleed_bg_border=args.bleed_bg_border,
+                        bleed_max_box_edge=args.bleed_max_box_edge,
+                        bleed_box_pad=BLEED_BOX_PAD, bleed_inverse_speck_frac=BLEED_INVERSE_SPECK_FRAC)
     if args.prompt == "dino":
         settings.update(dino_checkpoint=DINO_CHECKPOINT, dino_text=args.dino_text,
                         dino_box_threshold=args.dino_box_threshold)
@@ -788,6 +948,20 @@ def main():
     parser.add_argument("--min-component-frac", type=float, default=0.0,
                         help="Drop connected pieces of an instance smaller than this fraction of its "
                              "area (the largest piece always stays). 0 = off. Tunable guess.")
+    parser.add_argument("--bleed-outside-frac", type=float, default=0.0,
+                        help="Bleed fallback (box prompts only): if more than this fraction of a mask lies "
+                             "outside its detector box, replace it (see bleed_fallback()). 0 = off. "
+                             "0.02 separated the reviewed bleed from OK masks.")
+    parser.add_argument("--bleed-fill", type=float, nargs=2, default=(0.2, 0.9), metavar=("MIN", "MAX"),
+                        help="Bleed fallback: a replacement must fill MIN..MAX of its detector box "
+                             "(default: %(default)s).")
+    parser.add_argument("--bleed-bg-border", type=float, default=0.3,
+                        help="Bleed fallback: a candidate covering at least this fraction of the image "
+                             "frame counts as background and may be inverted (default: %(default)s).")
+    parser.add_argument("--bleed-max-box-edge", type=float, default=0.1,
+                        help="Bleed fallback: an inverted background candidate may cover at most this "
+                             "fraction of its box outline (default: %(default)s, photos; tightly cropped "
+                             "X-rays touch their box legitimately, 0.3 there).")
     parser.add_argument("--image-list", type=Path, default=None,
                         help="Text file with one file name per line, relative to --raw-dir as in COCO "
                              "file_name ('#' comment lines and blank lines ignored). Only these images "
