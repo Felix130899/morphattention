@@ -10,16 +10,17 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 - NHM attribution required in public outputs
 
 ## Current state
-- Masks: decided setting = B (`--mask-threshold -1 --min-component-frac 0.01`) + 3 % margin applied when building training images; blind dev-set review: fix rate 39 → 23 % photos, 36 → 22 % X-rays, cut fins nearly gone (vault/thesis-log/decisions/2026-10-01-fin-fix-setting.md + results HTML next to it)
-- Margin ring test passed (`scripts/margin_ring_test.py`, DINOv2 linear probe): margin adds no genus info beyond the outline; background alone predicts genus at 71 % / 61 % → masking is necessary. Robustness check without bleed images: unchanged. Record: vault/thesis-log/experiments/2026-10-01-margin-ring-test.md; frozen archive `data/archive/2026-10-01_margin_ring_test/`; git tag `margin-ring-test-2026-10-01`
-- `segment_fish.py`: `--candidate/--mask-threshold/--margin-frac/--min-component-frac/--image-list` + per-instance QA features; `review_masks.py`: categories (keys 1–6) + blind `--compare` mode + `--summary`. Mask policy: vault/thesis-log/decisions/2026-10-01-mask-policy.md
-- Full re-run with setting B done (2026-10-01): `data/processed/segmented/B_full_2026-10-01/` (11,731 photos, 5,207 X-rays); old run (2026-09-24) superseded; checkpoint before the fin fix: git tag `pre-fin-fix-2026-10-01`
-- NHM dataset: 16,942 images (Kopie duplicates removed), `labels.csv` matches (9 rows need review, origin unconfirmed); split train/test by NMW specimen number
+- Masks: setting B (`--mask-threshold -1 --min-component-frac 0.01`) + 3 % margin at training-image time; fin fix cut the fix rate 39 → 23 % photos, 36 → 22 % X-rays; margin ring test passed, background alone predicts genus at 71 % / 61 % → masking necessary. Full B run: `data/processed/segmented/B_full_2026-10-01/` (11,731 photos, 5,207 X-rays)
+- Bleed review done (2026-10-03): all 589 suspects reviewed, bleed confirmed in 72 photos (0.6 %) + 379 X-rays (7.3 %); verdicts in `B_full_2026-10-01/<domain>/review/`
+- Bleed fallback in `segment_fish.py` (`--bleed-outside-frac 0.02`, `--bleed-max-box-edge` 0.1 photos / 0.3 X-rays; commit `151a802`). Run over the 589 suspects → `data/processed/segmented/B_bleedfix/`: 60/72 photo + 278/379 X-ray bleeds replaced, 0/91 OK masks touched; `<domain>/changed.txt` (374 total), `<domain>/unresolved.txt` (90). Not yet blind-reviewed, not merged
+- `scripts/merge_runs.py`: merges a targeted re-run into a NEW full run dir (inputs untouched), `--take-ok-from <review-dir>:<run>`
+- Thesis docs: vault/thesis-log/experiments/2026-10-03-bleed-fallback.md (full record) + experiments/mask-quality-history.md (all mask stages, failure catalogue, numbers); figures `B_bleedfix/figures/`. NHM dataset 16,942 images, `labels.csv` matches (9 rows need review)
 
 ## Next steps
-1. Neo: review the suspected whole-background bleed. Why: 197 photos / 392 X-rays have masks covering > 70 % of the image + touching the border, mostly incl. the printed names (= the Clever Hans shortcut masking should remove). How: `python scripts/review_masks.py --run-dir data/processed/segmented/B_full_2026-10-01/<full_body|Röntgen> --image-list <run-dir>/suspect_bleed.txt`; `2` = bleed, `→` = OK → `<run-dir>/review/fix.txt`
-2. Then: add a bleed fallback to `segment_fish.py` (e.g. `--max-cover 0.7` → retry with a smaller SAM candidate / clip to the box), re-run only `<run-dir>/review/fix.txt` via `--image-list` into `data/processed/segmented/B_bleedfix/`, compare blind with `review_masks.py --compare`, merge back (exact commands in the task file)
-3. Afterwards: C's non-fin errors (photos wrong_object, catfish `_HOLOTYPE_…_SL…` series), then random review sample per domain → QA model
+1. Neo: blind compare of the 374 changed masks. Why: thresholds were tuned on these images, the blind verdict decides what gets merged and gives the thesis numbers. How: `python scripts/review_masks.py --compare B=data/processed/segmented/B_full_2026-10-01/<domain> --compare bleedfix=data/processed/segmented/B_bleedfix/<domain> --image-list data/processed/segmented/B_bleedfix/<domain>/changed.txt --review-dir data/processed/segmented/B_bleedfix/review_compare_<domain> --seed 0`, then `--summary --review-dir …`
+2. Then: `scripts/merge_runs.py --base …/B_full_2026-10-01/<domain> --patch …/B_bleedfix/<domain> --take-ok-from …/B_bleedfix/review_compare_<domain>:bleedfix --out data/processed/segmented/B_merged_2026-10-03/<domain>`; fill in §5 of the bleed-fallback record + mask-quality-history
+3. CVAT list: `unresolved.txt` + bleed the trigger missed (6 photos, 27 X-rays) + replacements judged fix
+4. Afterwards: remaining non-bleed errors (missed_fish, merged), train/test split by NMW specimen number, random review sample per domain → QA model
 - Full checklist: vault/thesis-log/tasks/clean-segmented-dataset-with-structured-labels.md
 
 ## Detailed log
