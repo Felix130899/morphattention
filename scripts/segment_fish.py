@@ -63,6 +63,22 @@ candidate. Instances record ``bleed_fallback`` (none / candidate / inverse /
 unresolved), ``sam_outside_box_frac`` and ``outside_box_frac``; flags
 ``bleed_fixed`` / ``bleed_unresolved``. See ``bleed_fallback()``.
 
+Wrong-region fix (``--wrong-region-fix``, default off): inside a box that
+spans the whole image a mask of the background around the fish, or of the
+corners of an X-ray canvas, never spills out of the box. It leaves the middle
+of the box empty and runs along the box outline instead (``is_wrong_region()``);
+SAM is then asked again with a point on the fish and points in the wrong
+region. Instances record ``wrong_region`` (none / reprompt / unresolved),
+``box_center_cover`` and ``box_edge_frac``; flags ``wrong_region_fixed`` /
+``wrong_region_unresolved``; a spurious detection without a fish is dropped
+(image flag ``wrong_region_dropped``). See ``wrong_region_fix()``.
+
+Clean-up (defaults off): ``--keep-near-frac`` drops small pieces far from the
+fish (printed names, rulers, background blobs, the line SAM leaves along an
+image edge; ``far_pieces_dropped``), ``--fill-holes-frac`` fills small holes
+(speckled fins, X-ray grids; ``holes_filled_px``). Numbers behind all three:
+vault/thesis-log/experiments/2026-10-04-random-review-fixes.md
+
 ``--image-list`` restricts a run to the listed files (e.g. a dev set), one
 path per line relative to ``--raw-dir`` as in COCO ``file_name``.
 
@@ -127,12 +143,31 @@ EDGE_BAND_LOGITS = 3.0
 BLEED_BOX_PAD = 0.02
 BLEED_INVERSE_SPECK_FRAC = 0.05
 
+# Wrong-region fix (see wrong_region_fix()): a mask is the wrong region when it
+# covers less than WRONG_CENTER_MAX of its box's central rectangle
+# (CENTER_FRAC x the box width/height) and more than WRONG_EDGE_MIN of the box
+# outline. A re-prompted replacement may cover at most REPROMPT_EDGE_MAX of
+# the outline and needs REPROMPT_MIN_REL_AREA of the largest other instance's
+# area; otherwise a spurious detection (several instances) is dropped.
+CENTER_FRAC = 0.3
+WRONG_CENTER_MAX = 0.25
+WRONG_EDGE_MIN = 0.3
+REPROMPT_EDGE_MAX = 0.15
+REPROMPT_MAX_NEG = 4
+REPROMPT_MIN_REL_AREA = 0.05
+
+# keep_near_pieces(): a far piece is dropped only when it is also smaller than
+# this fraction of the instance's largest piece (a ruler lying across a fish
+# splits it into big pieces that must stay).
+FAR_PIECE_MAX_FRAC = 0.1
+
 # Settings added after the first full run, with the value that reproduces it.
 # A run_config.json written before they existed lacks them; resuming such a
 # run is allowed only with exactly these values.
 LEGACY_DEFAULTS = {"candidate": "score", "mask_threshold": 0.0, "margin_frac": 0.0,
                    "min_component_frac": 0.0, "image_list": None, "image_list_sha256": None,
-                   "bleed_outside_frac": 0.0}
+                   "bleed_outside_frac": 0.0, "wrong_region_fix": False, "keep_near_frac": 0.0,
+                   "fill_holes_frac": 0.0}
 
 
 def iter_images(root: Path):
@@ -207,20 +242,23 @@ def best_candidates(candidate_masks, iou_scores):
     return candidate_masks[np.arange(len(chosen)), chosen], chosen
 
 
-def sam_logits(model, processor, image, input_points=None, input_boxes=None):
+def sam_logits(model, processor, image, input_points=None, input_boxes=None, input_labels=None):
     """Like ``data.models.sam.segment`` but returns SAM's raw mask logits.
 
     Same processor/model call; the only difference is ``binarize=False`` in
     ``post_process_masks``, which then skips its final ``masks > 0.0`` and
     returns the logits upscaled (bilinear) to the working image size. So
     ``logits > 0.0`` is bit-identical to ``segment()``'s masks.
+    ``input_labels`` (1 = foreground, 0 = background point) pairs with
+    ``input_points``; None makes every point foreground.
     Returns (logits (N, 3, H, W) float32, iou_scores (N, 3)) as numpy.
     """
     import torch
 
     device = next(model.parameters()).device
     inputs = processor(
-        image, input_points=input_points, input_boxes=input_boxes, return_tensors="pt"
+        image, input_points=input_points, input_labels=input_labels, input_boxes=input_boxes,
+        return_tensors="pt",
     ).to(device)
     with torch.no_grad():
         outputs = model(**inputs)
@@ -365,6 +403,98 @@ def bleed_fallback(candidates, chosen, box, args):
     return candidates[chosen], "unresolved", chosen, False
 
 
+def box_center_cover(mask, box):
+    """Share of the box's central rectangle (CENTER_FRAC x its width and height) covered by ``mask``."""
+    sl = box_slices(box, mask.shape)
+    inner = mask[sl]
+    h, w = inner.shape
+    if h == 0 or w == 0:
+        return 0.0
+    lo, hi = (1 - CENTER_FRAC) / 2, (1 + CENTER_FRAC) / 2
+    y0, x0 = int(h * lo), int(w * lo)
+    centre = inner[y0:max(y0 + 1, int(h * hi)), x0:max(x0 + 1, int(w * hi))]
+    return float(centre.mean())
+
+
+def is_wrong_region(mask, box):
+    """True if ``mask`` is the background around the fish (or the canvas corners) instead of the fish.
+
+    A fish covers the middle of its detector box and touches the box outline
+    only at its tips; an inverted mask or the corners of an X-ray canvas
+    leave the middle empty and run along the outline. Inside a box that spans
+    the whole image this never shows as "outside the box", so the bleed
+    fallback can't see it.
+    """
+    return box_center_cover(mask, box) < WRONG_CENTER_MAX and box_edge_frac(mask, box) > WRONG_EDGE_MIN
+
+
+def deepest_point(region):
+    """(x, y) of the ``region`` pixel farthest from the region's border."""
+    from scipy.ndimage import distance_transform_edt
+
+    dist = distance_transform_edt(np.pad(region, 1))[1:-1, 1:-1]
+    y, x = np.unravel_index(int(dist.argmax()), dist.shape)
+    return float(x), float(y)
+
+
+def reprompt_points(wrong, box):
+    """Point prompts that steer SAM away from a wrong-region mask: one positive
+    point on the fish (the box centre, or the in-box pixel farthest from the
+    wrong region if the centre lies in it) and a negative point deep inside
+    each of the REPROMPT_MAX_NEG largest pieces of the wrong region.
+    Returns (points [[x, y], ...], labels [1, 0, ...])."""
+    import cv2
+
+    x0, y0, x1, y1 = box
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    h, w = wrong.shape
+    if wrong[min(h - 1, int(cy)), min(w - 1, int(cx))]:
+        free = np.zeros_like(wrong)
+        sl = box_slices(box, wrong.shape)
+        free[sl] = ~wrong[sl]
+        cx, cy = deepest_point(free)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(wrong.astype(np.uint8), connectivity=8)
+    biggest = 1 + np.argsort(-stats[1:, cv2.CC_STAT_AREA], kind="stable")[:REPROMPT_MAX_NEG]
+    negatives = [list(deepest_point(labels == k)) for k in biggest]
+    return [[cx, cy]] + negatives, [1] + [0] * len(negatives)
+
+
+def wrong_region_fix(wrong, box, image, sam, args, other_max_area=0):
+    """Replace a wrong-region mask (see is_wrong_region()) by re-prompting SAM.
+
+    SAM gets the detector box again plus reprompt_points(). A new candidate is
+    valid if it is not a wrong region itself, covers at most REPROMPT_EDGE_MAX
+    of the box outline, lies at most 2 % outside the box, fills
+    ``--bleed-fill`` MIN..MAX of it and, when other instances exist, has at
+    least REPROMPT_MIN_REL_AREA of the largest one's area. The valid candidate
+    with the highest predicted IoU wins. Without one, an instance among
+    others is a spurious detection and is dropped; a lone instance stays,
+    marked unresolved.
+
+    Returns (mask, its logits, iou (3,), candidate areas (3,), candidate index,
+    status) with status "reprompt"; for "dropped" / "unresolved" all but the
+    status are None.
+    """
+    model, processor = sam
+    points, labels = reprompt_points(wrong, box)
+    logits, iou = sam_logits(model, processor, image, input_points=[[points]], input_labels=[[labels]],
+                             input_boxes=[[[float(v) for v in box]]])
+    logits, iou = logits[0], iou[0]
+    cands = logits > args.mask_threshold
+    lo, hi = args.bleed_fill
+    valid = []
+    for k, cand in enumerate(cands):
+        if not cand.any() or is_wrong_region(cand, box) or box_edge_frac(cand, box) > REPROMPT_EDGE_MAX:
+            continue
+        outside, fill = box_fit(cand, box)
+        if outside <= 0.02 and lo <= fill <= hi and cand.sum() >= REPROMPT_MIN_REL_AREA * other_max_area:
+            valid.append(k)
+    if valid:
+        k = max(valid, key=lambda j: iou[j])
+        return cands[k], logits[k], iou, cands.reshape(len(cands), -1).sum(axis=1), k, "reprompt"
+    return None, None, None, None, None, ("dropped" if other_max_area > 0 else "unresolved")
+
+
 def mask_containment(inner, outer):
     """Fraction of ``inner``'s pixels that also lie inside ``outer``."""
     area = inner.sum()
@@ -475,6 +605,60 @@ def drop_small_components(mask, min_frac):
     areas = stats[1:, cv2.CC_STAT_AREA]
     keep = (areas >= min_frac * areas.sum()) | (areas == areas.max())
     return np.isin(labels, 1 + np.nonzero(keep)[0])
+
+
+def keep_near_pieces(mask, near_frac):
+    """Drop pieces of an instance that lie far from the fish: printed names,
+    rulers, background blobs, the line SAM leaves along an image edge.
+
+    The largest 8-connected piece stays. Every piece within r = max(1,
+    round(near_frac * sqrt(largest piece area))) px of a kept piece stays too
+    (repeated, so chains of fin pieces survive), and so does every piece of at
+    least FAR_PIECE_MAX_FRAC of the largest one (a fish cut in two by a ruler).
+    near_frac <= 0 returns the mask unchanged (copy). Returns (mask, number of
+    pieces dropped).
+    """
+    if near_frac <= 0:
+        return mask.copy(), 0
+    import cv2
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    if n <= 2:
+        return mask.copy(), 0
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    keep = set((1 + np.nonzero(areas >= FAR_PIECE_MAX_FRAC * areas.max())[0]).tolist())
+    r = max(1, round(near_frac * math.sqrt(areas.max())))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    while True:
+        kept = np.isin(labels, sorted(keep))
+        near = cv2.dilate(kept.astype(np.uint8), kernel) > 0
+        reached = set(np.unique(labels[near & (labels > 0)]).tolist()) - keep
+        if not reached:
+            return kept, n - 1 - len(keep)
+        keep |= reached
+
+
+def fill_small_holes(mask, max_frac, blocked=None):
+    """Fill holes of an instance (background enclosed by it) of at most
+    ``max_frac`` of its area: speckled translucent fins, an open mouth, the
+    grid SAM sometimes leaves in X-ray bodies. Bigger holes (e.g. background
+    inside a curled body) and ``blocked`` pixels (other fish) stay out.
+    max_frac <= 0 returns the mask unchanged (copy). Returns (mask, pixels added).
+    """
+    if max_frac <= 0:
+        return mask.copy(), 0
+    import cv2
+    from scipy.ndimage import binary_fill_holes
+
+    holes = binary_fill_holes(mask) & ~mask
+    if not holes.any():
+        return mask.copy(), 0
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(holes.astype(np.uint8), connectivity=4)
+    small = 1 + np.nonzero(stats[1:, cv2.CC_STAT_AREA] <= max_frac * mask.sum())[0]
+    add = np.isin(labels, small)
+    if blocked is not None:
+        add &= ~blocked
+    return mask | add, int(add.sum())
 
 
 def grow_margins(masks, margin_frac):
@@ -658,18 +842,36 @@ def segment_image(image, prompt, sam, detector, args):
     edge_thr[inverted] *= -1
     del logits
 
+    wrong_source = np.array(["none"] * n_detections, dtype=object)
+    if boxes is not None and args.wrong_region_fix:
+        areas = masks.reshape(n_detections, -1).sum(axis=1)
+        for k in range(n_detections):
+            if not is_wrong_region(masks[k], boxes[k]):
+                continue
+            others = np.delete(areas, k)
+            new, new_logits, new_iou, new_areas, new_k, wrong_source[k] = wrong_region_fix(
+                masks[k], boxes[k], image, sam, args, int(others.max()) if len(others) else 0)
+            if wrong_source[k] == "reprompt":
+                masks[k], chosen_logits[k], edge_thr[k] = new, new_logits, args.mask_threshold
+                iou[k], cand_areas[k], chosen[k] = new_iou, new_areas, new_k
+            elif wrong_source[k] == "dropped":
+                masks[k] = False
+            areas[k] = masks[k].sum()
+    wrong_dropped = int((wrong_source == "dropped").sum())
+
     def keep(idx):
         nonlocal masks, boxes, scores, iou, chosen, cand_areas, chosen_logits
-        nonlocal edge_thr, bleed_source, chosen_outside
+        nonlocal edge_thr, bleed_source, chosen_outside, wrong_source
         masks, iou, chosen = masks[idx], iou[idx], chosen[idx]
         cand_areas, chosen_logits = cand_areas[idx], chosen_logits[idx]
         edge_thr, bleed_source, chosen_outside = edge_thr[idx], bleed_source[idx], chosen_outside[idx]
+        wrong_source = wrong_source[idx]
         boxes = boxes[idx] if boxes is not None else None
         scores = scores[idx] if scores is not None else None
 
     img_area = float(w * h)
     keep(np.nonzero(masks.reshape(len(masks), -1).sum(axis=1) > 0)[0])
-    empty_dropped = n_detections - len(masks)
+    empty_dropped = n_detections - len(masks) - wrong_dropped
 
     giant = masks.reshape(len(masks), -1).sum(axis=1) / img_area > args.giant_area_frac
     kept, dropped = remove_duplicates(masks, boxes, scores, giant, args.dedup_containment)
@@ -687,6 +889,13 @@ def segment_image(image, prompt, sam, detector, args):
         return "all_masks_empty"
 
     masks = np.stack([drop_small_components(m, args.min_component_frac) for m in masks])
+    far_dropped = np.zeros(len(masks), dtype=int)
+    for k in range(len(masks)):
+        masks[k], far_dropped[k] = keep_near_pieces(masks[k], args.keep_near_frac)
+    holes_filled = np.zeros(len(masks), dtype=int)
+    for k in range(len(masks)):  # one by one, so a filled hole is never given to two fish
+        masks[k], holes_filled[k] = fill_small_holes(masks[k], args.fill_holes_frac,
+                                                     blocked=masks.any(axis=0) & ~masks[k])
     # Edge feature on the pre-margin masks; other fish are not "missing fin".
     occupied = masks.any(axis=0)
     edge_uncertain = [edge_uncertain_frac(m, lg, thr, blocked=occupied & ~m)
@@ -696,7 +905,8 @@ def segment_image(image, prompt, sam, detector, args):
         "masks": masks, "boxes": boxes, "scores": scores, "iou": iou, "chosen": chosen,
         "cand_areas": cand_areas, "edge_uncertain": edge_uncertain, "margin_px": margin_px,
         "bleed_source": list(bleed_source), "chosen_outside": chosen_outside,
-        "n_detections": n_detections, "empty_dropped": empty_dropped,
+        "wrong_source": list(wrong_source), "far_dropped": far_dropped, "holes_filled": holes_filled,
+        "n_detections": n_detections, "empty_dropped": empty_dropped, "wrong_dropped": wrong_dropped,
         "dropped": [(b, s, new_index.get(j)) for b, s, j in dropped_info],
         "contested_frac": contested / img_area,
     }
@@ -734,14 +944,28 @@ def build_record(rel_name, orig_size, work_size, result, args):
             "outside_box_frac": (round(box_fit(m, result["boxes"][k])[0], 4)
                                  if result["boxes"] is not None else None),
             "bleed_fallback": result["bleed_source"][k],
+            # Wrong-region fix (none / reprompt / unresolved) and the box
+            # features it uses, on the final mask; far pieces dropped and hole
+            # pixels filled (working resolution).
+            "wrong_region": result["wrong_source"][k],
+            "box_center_cover": (round(box_center_cover(m, result["boxes"][k]), 4)
+                                 if result["boxes"] is not None else None),
+            "box_edge_frac": (round(box_edge_frac(m, result["boxes"][k]), 4)
+                              if result["boxes"] is not None else None),
+            "far_pieces_dropped": int(result["far_dropped"][k]),
+            "holes_filled_px": int(result["holes_filled"][k]),
         })
         if result["bleed_source"][k] in ("candidate", "inverse"):
             flags.append("bleed_fixed")
         elif result["bleed_source"][k] == "unresolved":
             flags.append("bleed_unresolved")
-        # Bleed flags stay off the overlay: they would tell a blind
+        if result["wrong_source"][k] == "reprompt":
+            flags.append("wrong_region_fixed")
+        elif result["wrong_source"][k] == "unresolved":
+            flags.append("wrong_region_unresolved")
+        # Fix flags stay off the overlay: they would tell a blind
         # review_masks.py --compare which run an overlay comes from.
-        labels.append(" ".join([str(k)] + [f for f in flags if not f.startswith("bleed_")]))
+        labels.append(" ".join([str(k)] + [f for f in flags if not f.startswith(("bleed_", "wrong_region_"))]))
     image_flags = sorted({f for inst in instances for f in inst["flags"]})
     if len(instances) > 1:
         image_flags.append("multi_instance")
@@ -751,12 +975,15 @@ def build_record(rel_name, orig_size, work_size, result, args):
         image_flags.append("overlap_resolved")
     if result["empty_dropped"]:
         image_flags.append("empty_masks_dropped")
+    if result["wrong_dropped"]:
+        image_flags.append("wrong_region_dropped")
     record = {
         "file_name": rel_name, "status": "ok", "width": W, "height": H,
         "qa": {
             "flags": image_flags,
             "n_detections": result["n_detections"],
             "empty_dropped": result["empty_dropped"],
+            "wrong_region_dropped": result["wrong_dropped"],
             "duplicates_removed": [
                 {"det_box": scale_box(b, sx, sy) if b is not None else None,
                  "det_score": round(s, 4) if s is not None else None,
@@ -794,15 +1021,23 @@ def run_settings(args, image_names=None):
         "tiny_area_frac": args.tiny_area_frac, "giant_area_frac": args.giant_area_frac,
         "candidate": args.candidate, "mask_threshold": args.mask_threshold,
         "margin_frac": args.margin_frac, "min_component_frac": args.min_component_frac,
-        "bleed_outside_frac": args.bleed_outside_frac,
+        "bleed_outside_frac": args.bleed_outside_frac, "wrong_region_fix": args.wrong_region_fix,
+        "keep_near_frac": args.keep_near_frac, "fill_holes_frac": args.fill_holes_frac,
         "image_list": str(Path(args.image_list).resolve()) if args.image_list is not None else None,
         "image_list_sha256": (hashlib.sha256("\n".join(sorted(image_names)).encode()).hexdigest()
                               if image_names is not None else None),
     }
+    if args.bleed_outside_frac > 0 or args.wrong_region_fix:
+        settings.update(bleed_fill=list(args.bleed_fill))
     if args.bleed_outside_frac > 0:
-        settings.update(bleed_fill=list(args.bleed_fill), bleed_bg_border=args.bleed_bg_border,
-                        bleed_max_box_edge=args.bleed_max_box_edge,
+        settings.update(bleed_bg_border=args.bleed_bg_border, bleed_max_box_edge=args.bleed_max_box_edge,
                         bleed_box_pad=BLEED_BOX_PAD, bleed_inverse_speck_frac=BLEED_INVERSE_SPECK_FRAC)
+    if args.wrong_region_fix:
+        settings.update(center_frac=CENTER_FRAC, wrong_center_max=WRONG_CENTER_MAX, wrong_edge_min=WRONG_EDGE_MIN,
+                        reprompt_edge_max=REPROMPT_EDGE_MAX, reprompt_max_neg=REPROMPT_MAX_NEG,
+                        reprompt_min_rel_area=REPROMPT_MIN_REL_AREA)
+    if args.keep_near_frac > 0:
+        settings.update(far_piece_max_frac=FAR_PIECE_MAX_FRAC)
     if args.prompt == "dino":
         settings.update(dino_checkpoint=DINO_CHECKPOINT, dino_text=args.dino_text,
                         dino_box_threshold=args.dino_box_threshold)
@@ -962,6 +1197,20 @@ def main():
                         help="Bleed fallback: an inverted background candidate may cover at most this "
                              "fraction of its box outline (default: %(default)s, photos; tightly cropped "
                              "X-rays touch their box legitimately, 0.3 there).")
+    parser.add_argument("--wrong-region-fix", action="store_true",
+                        help="Box prompts only: re-prompt SAM (box + a point on the fish + points in the "
+                             "wrong region) when a mask leaves the middle of its box empty and runs along "
+                             "the box outline - the background around the fish or the corners of an X-ray "
+                             "canvas (see wrong_region_fix()). Off by default.")
+    parser.add_argument("--keep-near-frac", type=float, default=0.0,
+                        help="Drop pieces of an instance farther than f*sqrt(largest piece area) px from "
+                             "the fish and smaller than %(far)s of its largest piece (labels, rulers, "
+                             "blobs, edge lines). 0 = off; 0.02 fit the reviewed sample."
+                             % {"far": FAR_PIECE_MAX_FRAC})
+    parser.add_argument("--fill-holes-frac", type=float, default=0.0,
+                        help="Fill holes of an instance of at most this fraction of its area (speckled "
+                             "fins, X-ray grids), never into another fish. 0 = off; 0.02 fit the "
+                             "reviewed sample.")
     parser.add_argument("--image-list", type=Path, default=None,
                         help="Text file with one file name per line, relative to --raw-dir as in COCO "
                              "file_name ('#' comment lines and blank lines ignored). Only these images "

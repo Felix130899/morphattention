@@ -188,7 +188,7 @@ def default_args(**kw):
     a = dict(raw_dir="raw", prompt="center", max_side=2048, dedup_containment=0.8, tiny_area_frac=0.001,
              giant_area_frac=0.9, candidate="score", mask_threshold=0.0, margin_frac=0.0, min_component_frac=0.0,
              image_list=None, bleed_outside_frac=0.0, bleed_fill=(0.2, 0.9), bleed_bg_border=0.3,
-             bleed_max_box_edge=0.1)
+             bleed_max_box_edge=0.1, wrong_region_fix=False, keep_near_frac=0.0, fill_holes_frac=0.0)
     a.update(kw)
     return SimpleNamespace(**a)
 
@@ -215,6 +215,7 @@ def test_resume_of_pre_option_run_accepts_defaults_only():
         assert cfg["settings"]["candidate"] == "score"  # written back explicitly
         for changed in (dict(candidate="largest"), dict(mask_threshold=-2.0), dict(margin_frac=0.03),
                         dict(min_component_frac=0.01), dict(bleed_outside_frac=0.02),
+                        dict(wrong_region_fix=True), dict(keep_near_frac=0.02), dict(fill_holes_frac=0.02),
                         dict(image_list=Path("dev.txt"))):
             try:
                 sf.prepare_run_config(run_dir, sf.run_settings(default_args(**changed),
@@ -416,6 +417,90 @@ def test_bleed_fallback_rejects_inverse_running_along_the_box_edge():
     cands = np.stack([BLEED, eye, inv_source])
     _, src, _, _ = sf.bleed_fallback(cands, 0, BOX, bleed_args())
     assert src == "unresolved"
+
+
+# --- wrong-region fix -----------------------------------------------------
+# A box that spans the whole 100x100 image (close-up / X-ray canvas): the
+# background around the fish and the canvas corners never leave the box.
+FULL_BOX = np.array([0, 0, 100, 100], float)
+BIG_FISH = rect_mask(100, 100, 10, 30, 90, 70)
+AROUND = ~BIG_FISH
+CORNERS = rect_mask(100, 100, 0, 0, 40, 40) | rect_mask(100, 100, 60, 60, 100, 100)  # ~40 % of the outline
+
+
+def test_wrong_region_detects_inverse_and_canvas_corners_but_not_the_fish():
+    assert sf.box_center_cover(BIG_FISH, FULL_BOX) == 1.0 and sf.box_center_cover(AROUND, FULL_BOX) == 0.0
+    assert not sf.is_wrong_region(BIG_FISH, FULL_BOX)
+    assert sf.is_wrong_region(AROUND, FULL_BOX) and sf.is_wrong_region(CORNERS, FULL_BOX)
+    curled = rect_mask(100, 100, 10, 10, 90, 20) | rect_mask(100, 100, 10, 80, 90, 90)  # middle empty
+    assert not sf.is_wrong_region(curled, FULL_BOX)  # ... but it touches the outline only at its tips
+
+
+def test_reprompt_points_put_the_positive_on_the_fish_and_negatives_in_the_wrong_region():
+    points, labels = sf.reprompt_points(CORNERS, FULL_BOX)
+    assert labels == [1, 0, 0] and points[0] == [50.0, 50.0]
+    assert all(CORNERS[int(y), int(x)] for x, y in points[1:])
+    shifted = AROUND | rect_mask(100, 100, 40, 40, 60, 60)  # centre itself in the wrong region
+    (x, y), *_ = sf.reprompt_points(shifted, FULL_BOX)[0]
+    assert not shifted[int(y), int(x)]
+
+
+def fake_sam(candidates, iou):
+    """Stand-in for SAM in wrong_region_fix(): logits +5 inside each candidate, -5 outside."""
+    def call(model, processor, image, **kw):
+        assert kw["input_labels"][0][0][0] == 1 and len(kw["input_points"][0][0]) == len(kw["input_labels"][0][0])
+        return np.where(np.stack(candidates), 5.0, -5.0)[None].astype(np.float32), np.array([iou], np.float32)
+    return call
+
+
+def test_wrong_region_fix_takes_the_best_valid_reprompt_candidate():
+    real = sf.sam_logits
+    try:
+        fish_and_canvas = BIG_FISH | rect_mask(100, 100, 0, 0, 100, 10)  # runs along the outline
+        sf.sam_logits = fake_sam([CORNERS, fish_and_canvas, BIG_FISH], [0.99, 0.98, 0.9])
+        mask, _, iou, areas, k, status = sf.wrong_region_fix(CORNERS, FULL_BOX, None, (None, None),
+                                                             bleed_args(mask_threshold=0.0))
+        assert status == "reprompt" and k == 2 and (mask == BIG_FISH).all()
+        assert areas.tolist() == [int(CORNERS.sum()), int(fish_and_canvas.sum()), int(BIG_FISH.sum())]
+        # Nothing valid: dropped next to other fish, kept (unresolved) when alone.
+        sf.sam_logits = fake_sam([CORNERS, AROUND, CORNERS], [0.9, 0.9, 0.9])
+        assert sf.wrong_region_fix(CORNERS, FULL_BOX, None, (None, None), bleed_args(), 500)[-1] == "dropped"
+        assert sf.wrong_region_fix(CORNERS, FULL_BOX, None, (None, None), bleed_args(), 0)[-1] == "unresolved"
+        # A valid but tiny candidate next to a big fish is a spurious detection.
+        speck = rect_mask(100, 100, 45, 45, 55, 55)
+        sf.sam_logits = fake_sam([speck, speck, speck], [0.9, 0.9, 0.9])
+        small_box = np.array([40, 40, 60, 60], float)
+        assert sf.wrong_region_fix(CORNERS, small_box, None, (None, None), bleed_args(), 10_000)[-1] == "dropped"
+    finally:
+        sf.sam_logits = real
+
+
+# --- clean-up ----------------------------------------------------------------
+def test_keep_near_pieces_drops_far_small_pieces_only():
+    body = rect_mask(300, 300, 50, 100, 250, 200)     # 20000 px: r = round(0.02 * sqrt(20000)) = 3
+    fin = rect_mask(300, 300, 252, 120, 256, 180)     # 3 px from the body: stays
+    label = rect_mask(300, 300, 60, 280, 100, 285)    # far, 1 % of the body: dropped
+    half = rect_mask(300, 300, 50, 215, 250, 240)     # far but 25 % of the body: stays
+    out, n = sf.keep_near_pieces(body | fin | label, 0.02)
+    assert (out == (body | fin)).all() and n == 1
+    out, n = sf.keep_near_pieces(body | half | label, 0.02)
+    assert (out == (body | half)).all() and n == 1
+    chain = rect_mask(300, 300, 258, 120, 262, 180)   # 3 px from the fin, 9 px from the body
+    assert (sf.keep_near_pieces(body | fin | chain, 0.02)[0] == (body | fin | chain)).all()
+    assert (sf.keep_near_pieces(body | label, 0.0)[0] == (body | label)).all()
+
+
+def test_fill_small_holes_fills_small_holes_not_big_ones_or_other_fish():
+    ring = rect_mask(100, 100, 10, 10, 90, 90) & ~rect_mask(100, 100, 20, 20, 80, 80)  # big hole
+    speckled = rect_mask(100, 100, 10, 10, 50, 50)
+    speckled[20, 20] = speckled[30, 31] = False
+    out, added = sf.fill_small_holes(speckled, 0.02)
+    assert (out == rect_mask(100, 100, 10, 10, 50, 50)).all() and added == 2
+    assert (sf.fill_small_holes(ring, 0.02)[0] == ring).all()
+    other = np.zeros((100, 100), bool)
+    other[30, 31] = True  # another fish's pixel inside the hole
+    out, added = sf.fill_small_holes(speckled, 0.02, blocked=other)
+    assert added == 1 and not out[30, 31]
 
 
 if __name__ == "__main__":
