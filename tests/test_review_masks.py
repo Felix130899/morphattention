@@ -330,6 +330,109 @@ def test_single_run_server_still_works():
         assert "b.jpg,drop,bleed;merged" in (review / "categories.csv").read_text()
 
 
+def expect_value_error(fn, *args):
+    try:
+        fn(*args)
+    except ValueError as e:
+        return str(e)
+    raise AssertionError("expected ValueError")
+
+
+def test_sample_is_seeded_saved_grows_and_refuses_changes():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        names = [f"f{k:02d}.jpg" for k in range(20)]
+        run = make_run(tmp / "run", tmp / "raw", names)
+        review = tmp / "review"
+        review.mkdir()
+        items = rm.load_items(run)
+        first = [it["file_name"] for it in rm.draw_sample(review, items, 5, 0, run)]
+        expected = sorted(names)
+        rm.random.Random(0).shuffle(expected)
+        assert first == expected[:5] and first != sorted(first)
+        saved = json.loads((review / "sample.json").read_text())
+        assert saved["sample"] == first and saved["population"] == 20 and saved["seed"] == 0
+        # resume (same N or None) gives the same list; growing keeps the prefix
+        assert [it["file_name"] for it in rm.draw_sample(review, items, None, 0, run)] == first
+        grown = [it["file_name"] for it in rm.draw_sample(review, items, 8, 0, run)]
+        assert grown[:5] == first and grown == expected[:8]
+        assert json.loads((review / "sample.json").read_text())["n"] == 8
+        assert "only grow" in expect_value_error(rm.draw_sample, review, items, 5, 0, run)
+        assert "seed" in expect_value_error(rm.draw_sample, review, items, 8, 1, run)
+        assert "changed" in expect_value_error(rm.draw_sample, review, items[1:], 8, 0, run)
+        assert "larger" in expect_value_error(rm.draw_sample, tmp / "fresh", items, 21, 0, run)
+        assert "needed" in expect_value_error(rm.draw_sample, tmp / "fresh", items, None, 0, run)
+
+
+def test_sample_excludes_dropped_and_skipped():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        run = make_run(tmp / "run", tmp / "raw", ["a.jpg", "b.jpg", "c.jpg"])
+        recs = [json.loads(line) for line in (run / "annotations.jsonl").read_text().splitlines()]
+        recs[1]["status"], recs[2]["status"] = "dropped", "skipped"
+        (run / "annotations.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+        review = tmp / "review"
+        review.mkdir()
+        assert [it["file_name"] for it in rm.draw_sample(review, rm.load_items(run), 1, 0, run)] == ["a.jpg"]
+
+
+def test_wilson_interval():
+    low, high = rm.wilson(15, 300)  # 5 % of 300
+    assert abs(low - 0.0305) < 1e-3 and abs(high - 0.0810) < 1e-3
+    low, high = rm.wilson(0, 300)
+    assert low == 0.0 and abs(high - 0.0126) < 1e-3
+    assert rm.wilson(0, 0) == (0.0, 1.0)
+
+
+def test_sample_summary_counts_drops_as_errors():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        run = make_run(tmp / "run", tmp / "raw", [f"f{k}.jpg" for k in range(10)])
+        review = tmp / "review"
+        review.mkdir()
+        items = rm.draw_sample(review, rm.load_items(run), 4, 0, run)
+        decisions = {}
+        rm.record_decision(review, decisions, items[0]["file_name"], "ok")
+        rm.record_decision(review, decisions, items[1]["file_name"], "fix", ["bleed", "fin_cut"])
+        rm.record_decision(review, decisions, items[2]["file_name"], "drop", ["wrong_object"])
+        outside = next(n for n in (f"f{k}.jpg" for k in range(10)) if n not in {it["file_name"] for it in items})
+        rm.record_decision(review, decisions, outside, "fix", ["bleed"])  # not in the sample: ignored
+        row = rm.summarize_sample(review)
+        assert (row["sample"], row["judged"], row["ok"], row["fix"], row["drop"]) == (4, 3, 1, 1, 1)
+        assert row["error_rate"] == "0.6667" and row["bleed"] == 1 and row["wrong_object"] == 1
+        low, high = rm.wilson(2, 3)
+        assert row["ci_low"] == f"{low:.4f}" and row["ci_high"] == f"{high:.4f}"
+
+
+def test_sample_server_is_blind_but_saves_by_file_name():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        run = make_run(tmp / "run", tmp / "raw", ["zanderA.jpg", "zanderB.jpg"], {"zanderB.jpg": ["giant"]})
+        review = tmp / "review"
+        review.mkdir()
+        rm.record_decision(review, {}, "zanderB.jpg", "fix", ["bleed"])
+        items = rm.draw_sample(review, rm.load_items(run), 2, 0, run)
+        decisions = rm.load_decisions(review)
+        server = serve(rm.make_handler(items, decisions, review, threading.Lock(), blind=True))
+        try:
+            responses = [http_fetch(server, "/"), http_fetch(server, "/api/state"),
+                         http_fetch(server, "/api/decide", {"item": 0, "action": "drop"}),
+                         http_fetch(server, "/overlay/0")]
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert [s for s, _, _ in responses] == [200] * 4
+        for _, headers, body in responses:
+            for word in [b"zander", b"giant", str(tmp).encode()]:
+                assert word not in headers + body, (word, headers + body[:300])
+        state = json.loads(responses[1][2])
+        b_idx = str([it["file_name"] for it in items].index("zanderB.jpg"))
+        assert state["blind"] is True and state["compare"] is False
+        assert state["items"] == [{"key": "0"}, {"key": "1"}]
+        assert state["decisions"] == {b_idx: {"verdict": "fix", "categories": ["bleed"]}}
+        assert rm.load_decisions(review)[items[0]["file_name"]]["verdict"] == "drop"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

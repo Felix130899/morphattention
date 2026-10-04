@@ -17,7 +17,7 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 - NHM dataset 16,942 images, `labels.csv` matches (9 rows need review). Drops are not random: Coregonus −22 X-rays, Barbus −18; 6 singleton genera lose their only image in a domain
 
 ## Next steps
-1. Extend `review_masks.py` with a random-sample mode (seeded, per domain, dropped images excluded, sample list saved), then review ~300 random masks per domain from `B_merged_2026-10-03`
+1. Review the 300 random masks per domain (Neo; samples drawn, seed 0): `python scripts/review_masks.py --run-dir data/processed/segmented/B_merged_2026-10-03/<domain> --sample 300 --seed 0`, then `--summary --review-dir <domain>/review_random_seed0` for the rate + Wilson CI
 2. Error-rate report (chart page): % wrong masks per domain with Wilson CI, per error category, + which setting fixes each category. Too high → change setting, rerun, blind compare, review a fresh sample
 3. Train/test split by NMW specimen number (not by image) on `B_merged_2026-10-03`, separate test sets per domain; check genus balance after the drops
 4. Manifest CSV, one row per image: file, domain, species, genus, specimen, mask path, status + reason, split

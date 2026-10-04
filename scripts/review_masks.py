@@ -73,11 +73,36 @@ judged differently.
 Caveat: the overlay pixels themselves are what segment_fish.py drew (QA flag
 labels, grey "dup" boxes), so a run whose settings produce typical flags can
 still be recognisable from the image.
+
+Random-sample mode (``--sample N``, single run): estimates the error rate of
+the whole run. The population is every reviewable image (status ok, overlay on
+disk - dropped and skipped images are not in it). Its sorted file names are
+shuffled with ``--seed`` and the first N are shown in that shuffled order,
+blind (no file name, QA flags or fish count on the page). Raising N later on
+the same review dir keeps the first N and appends the next ones from the same
+shuffle, so the grown sample is still random; shrinking is refused. Because
+the order is random, any judged prefix is itself a random sample.
+``<review-dir>/sample.json`` stores run dir, seed, population size and hash,
+and the sample; a restart with another run, seed or population is refused
+(use a new ``--review-dir``). Decisions are saved as in single-run mode.
+Default review dir: ``<run-dir>/review_random_seed<seed>``.
+
+    python scripts/review_masks.py --run-dir data/processed/segmented/B_merged_2026-10-03/Röntgen \\
+        --sample 300 --seed 0
+    python scripts/review_masks.py --summary \\
+        --review-dir data/processed/segmented/B_merged_2026-10-03/Röntgen/review_random_seed0
+
+``--summary`` on a sample review dir prints judged, ok, fix, drop, the error
+rate (fix + drop) / judged with a 95 % Wilson interval, and the count per
+category, and writes summary.csv. Drops count as errors here: a dropped image
+is a bad image in the usable set.
 """
 
 import argparse
 import csv
+import hashlib
 import json
+import math
 import random
 import threading
 from datetime import datetime
@@ -275,6 +300,91 @@ def order_items(review_dir, items, seed, runs):
     return [by_key[k] for k in keys]
 
 
+def draw_sample(review_dir, items, n, seed, run_dir):
+    """The first ``n`` of ``items`` in the seeded shuffle of their sorted file
+    names, saved to sample.json - or, if sample.json exists, that sample
+    (grown to ``n`` if ``n`` is larger; ``n`` None = as saved)."""
+    path = review_dir / "sample.json"
+    by_name = {it["file_name"]: it for it in items}
+    names = sorted(by_name)
+    population_sha256 = hashlib.sha256("\n".join(names).encode()).hexdigest()
+    saved = json.loads(path.read_text()) if path.exists() else None
+    if saved:
+        if saved["run_dir"] != str(run_dir.resolve()) or saved["seed"] != seed:
+            raise ValueError(f"{path} was drawn from {saved['run_dir']} with seed {saved['seed']}; "
+                             f"use that run and seed, or a new --review-dir")
+        if saved["population_sha256"] != population_sha256:
+            raise ValueError(f"{path}: the run's reviewable images changed since the sample was drawn "
+                             f"({saved['population']} then, {len(names)} now); use a new --review-dir")
+        if n is not None and n < saved["n"]:
+            raise ValueError(f"{path} already has {saved['n']} images; a sample can only grow")
+    if n is None:
+        if not saved:
+            raise ValueError("--sample N is needed to draw a new sample")
+        n = saved["n"]
+    if n > len(names):
+        raise ValueError(f"--sample {n} is larger than the population ({len(names)} images)")
+    random.Random(seed).shuffle(names)
+    sample = names[:n]
+    if saved and sample[:saved["n"]] != saved["sample"]:
+        raise ValueError(f"{path}: the seeded shuffle no longer reproduces the saved sample")
+    if not saved or n > saved["n"]:
+        now = datetime.now().isoformat(timespec="seconds")
+        path.write_text(json.dumps({
+            "run_dir": str(run_dir.resolve()), "seed": seed, "population": len(names),
+            "population_sha256": population_sha256, "n": n,
+            "created": saved["created"] if saved else now, "updated": now, "sample": sample}, indent=1))
+    return [by_name[name] for name in sample]
+
+
+def wilson(k, n, z=1.96):
+    """95 % Wilson score interval (low, high) for k successes in n trials."""
+    if n == 0:
+        return (0.0, 1.0)
+    p = k / n
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z / (1 + z * z / n) * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def summarize_sample(review_dir):
+    """Counts, error rate (fix + drop) / judged with Wilson interval, per category."""
+    saved = json.loads((review_dir / "sample.json").read_text())
+    decisions = load_decisions(review_dir)
+    row = {"run_dir": saved["run_dir"], "seed": saved["seed"], "population": saved["population"],
+           "sample": saved["n"], "judged": 0, **{v: 0 for v in VERDICTS},
+           "error_rate": "", "ci_low": "", "ci_high": "", **{c: 0 for c in CATEGORIES}}
+    for name in saved["sample"]:
+        d = decisions.get(name)
+        if d is None:
+            continue
+        row["judged"] += 1
+        row[d["verdict"]] += 1
+        for c in d["categories"]:
+            row[c] += 1
+    if row["judged"]:
+        bad = row["fix"] + row["drop"]
+        low, high = wilson(bad, row["judged"])
+        row.update(error_rate=f"{bad / row['judged']:.4f}", ci_low=f"{low:.4f}", ci_high=f"{high:.4f}")
+    return row
+
+
+def print_sample_summary(review_dir):
+    row = summarize_sample(review_dir)
+    print(f"{row['run_dir']}  seed {row['seed']}: {row['judged']} / {row['sample']} judged "
+          f"(population {row['population']})")
+    print(f"ok {row['ok']}  fix {row['fix']}  drop {row['drop']}")
+    if row["judged"]:
+        print(f"error rate (fix + drop) / judged = {float(row['error_rate']):.1%}  "
+              f"95 % Wilson CI {float(row['ci_low']):.1%} - {float(row['ci_high']):.1%}")
+    print("categories: " + "  ".join(f"{c} {row[c]}" for c in CATEGORIES))
+    with open(review_dir / "summary.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(row))
+        w.writeheader()
+        w.writerow(row)
+    print(f"Wrote {review_dir}/summary.csv")
+
+
 def summarize(review_dir):
     """Per-run rows and per-image disagreements from order.json + decisions.jsonl."""
     saved = json.loads((review_dir / "order.json").read_text())
@@ -360,12 +470,12 @@ PAGE = """<!doctype html>
   <kbd>f</kbd> fix &nbsp; <kbd>x</kbd> drop &nbsp; <kbd>u</kbd> clear &nbsp; <kbd>n</kbd> next unjudged &nbsp;
   hold <kbd>r</kbd> raw</span></footer>
 <script>
-let items = [], decisions = {}, cats = [], compare = false, i = 0, showRaw = false, hint = '';
+let items = [], decisions = {}, cats = [], blind = false, i = 0, showRaw = false, hint = '';
 const $ = id => document.getElementById(id);
 
 async function load() {
   const s = await (await fetch('/api/state')).json();
-  items = s.items; decisions = s.decisions; cats = s.categories; compare = s.compare;
+  items = s.items; decisions = s.decisions; cats = s.categories; blind = s.blind;
   $('legend').innerHTML = cats.map((c, k) => `<span id="cat${k}"><kbd>${k + 1}</kbd> ${c}</span>`).join('');
   i = items.findIndex(it => !(it.key in decisions));
   if (i < 0) i = 0;
@@ -376,8 +486,8 @@ function show() {
   if (!items.length) { $('name').textContent = 'No images to review.'; return; }
   const it = items[i], d = decisions[it.key], on = d ? d.categories : [];
   $('img').src = (showRaw ? '/raw/' : '/overlay/') + i;
-  $('pos').textContent = (compare ? 'item ' : '') + `${i + 1} / ${items.length}`;
-  if (!compare) {
+  $('pos').textContent = (blind ? 'item ' : '') + `${i + 1} / ${items.length}`;
+  if (!blind) {
     $('name').textContent = it.file_name;
     $('flags').innerHTML = `${it.n_instances} fish ` + it.flags.map(f => `<span>${f}</span>`).join('');
   }
@@ -442,17 +552,25 @@ load();
 """
 
 
-def make_handler(items, decisions, review_dir, lock, compare=False):
-    """HTTP handler. In compare mode nothing run-specific (run name, dir, path,
-    file name, QA flags) ever leaves the server: items are addressed by index."""
-    if compare:
+def make_handler(items, decisions, review_dir, lock, compare=False, blind=False):
+    """HTTP handler. In compare mode (and with ``blind``) nothing image- or
+    run-specific (run name, dir, path, file name, QA flags, fish count) ever
+    leaves the server: items are addressed by index."""
+    blind = blind or compare
+    if blind:
         public_items = [{"key": str(k)} for k in range(len(items))]
     else:
         public_items = [{"key": it["file_name"], **{k: it[k] for k in ("file_name", "flags", "n_instances")}}
                         for it in items]
+    index_of = {it["file_name"]: k for k, it in enumerate(items)}
 
     def key_of(idx):
         return idx if compare else items[idx]["file_name"]
+
+    def public_key(key):
+        if compare:
+            return str(key)
+        return str(index_of[key]) if blind else key
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # keep the terminal quiet
@@ -470,8 +588,8 @@ def make_handler(items, decisions, review_dir, lock, compare=False):
                 return self._send(PAGE.encode(), "text/html; charset=utf-8")
             if self.path == "/api/state":
                 with lock:
-                    public = {(str(k) if compare else k): d for k, d in decisions.items()}
-                    state = {"compare": compare, "categories": CATEGORIES, "items": public_items,
+                    public = {public_key(k): d for k, d in decisions.items() if compare or not blind or k in index_of}
+                    state = {"compare": compare, "blind": blind, "categories": CATEGORIES, "items": public_items,
                              "decisions": public}
                     body = json.dumps(state).encode()
                 return self._send(body, "application/json")
@@ -524,7 +642,10 @@ def main():
     parser.add_argument("--review-dir", type=Path,
                         help="Where decisions go. Required with --compare/--summary; "
                              "single-run default: <run-dir>/review.")
-    parser.add_argument("--seed", type=int, default=0, help="Shuffle seed for --compare (default 0).")
+    parser.add_argument("--seed", type=int, default=0, help="Shuffle seed for --compare and --sample (default 0).")
+    parser.add_argument("--sample", type=int, metavar="N",
+                        help="Random-sample mode with --run-dir: review N seeded random images, blind. "
+                             "Default --review-dir: <run-dir>/review_random_seed<seed>.")
     parser.add_argument("--image-list", type=Path,
                         help="Only show these images: one file name per line, # comments allowed.")
     parser.add_argument("--summary", action="store_true",
@@ -535,11 +656,22 @@ def main():
     args = parser.parse_args()
 
     if args.summary:
+        if args.review_dir and (args.review_dir / "sample.json").exists():
+            return print_sample_summary(args.review_dir)
         if not args.review_dir or not (args.review_dir / "order.json").exists():
-            parser.error("--summary needs --review-dir of a compare-mode review (with order.json)")
+            parser.error("--summary needs --review-dir of a compare-mode review (order.json) "
+                         "or a random-sample review (sample.json)")
         return print_summary(args.review_dir)
     if bool(args.run_dir) == bool(args.compare):
         parser.error("give either --run-dir or --compare (at least twice)")
+    if args.sample is not None:
+        if args.compare or args.image_list or args.flagged_only:
+            parser.error("--sample draws from the whole run: use it with --run-dir only "
+                         "(no --compare, --image-list, --flagged-only)")
+        if args.sample < 1:
+            parser.error("--sample needs N >= 1")
+    elif args.run_dir and args.review_dir and (args.review_dir / "sample.json").exists():
+        parser.error(f"{args.review_dir} is a random-sample review; resume it with --sample N")
     wanted = set(read_image_list(args.image_list)) if args.image_list else None
 
     if args.compare:
@@ -568,6 +700,21 @@ def main():
         n_images = len({it["file_name"] for it in items})
         print(f"{len(items)} items ({n_images} images x {len(runs)} runs, shuffled), "
               f"{len(decisions)} already judged. Decisions -> {review_dir}/")
+    elif args.sample is not None:
+        review_dir = args.review_dir or args.run_dir / f"review_random_seed{args.seed}"
+        review_dir.mkdir(parents=True, exist_ok=True)
+        if (review_dir / "order.json").exists() or (
+                (review_dir / "decisions.jsonl").exists() and not (review_dir / "sample.json").exists()):
+            raise SystemExit(f"{review_dir} already holds a non-sample review; use a new --review-dir")
+        population = load_items(args.run_dir)
+        try:
+            items = draw_sample(review_dir, population, args.sample, args.seed, args.run_dir)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        decisions = load_decisions(review_dir)
+        judged = sum(it["file_name"] in decisions for it in items)
+        print(f"Random sample: {len(items)} of {len(population)} images (seed {args.seed}, blind), "
+              f"{judged} already judged. Decisions -> {review_dir}/")
     else:
         items = load_items(args.run_dir, args.flagged_only, wanted)
         review_dir = args.review_dir or args.run_dir / "review"
@@ -583,7 +730,8 @@ def main():
                   f"{', not flagged' if args.flagged_only else ''}), e.g. {missing[:3]}")
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port),
-                                 make_handler(items, decisions, review_dir, threading.Lock(), bool(args.compare)))
+                                 make_handler(items, decisions, review_dir, threading.Lock(), bool(args.compare),
+                                              blind=args.sample is not None))
     print(f"Open http://localhost:{args.port}  (Ctrl+C to stop - every keypress is already saved)")
     try:
         server.serve_forever()
