@@ -376,6 +376,32 @@ def test_sample_excludes_dropped_and_skipped():
         assert [it["file_name"] for it in rm.draw_sample(review, rm.load_items(run), 1, 0, run)] == ["a.jpg"]
 
 
+def test_sample_exclude_list_is_left_out_saved_and_enforced_on_resume():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        names = [f"f{k:02d}.jpg" for k in range(20)]
+        run = make_run(tmp / "run", tmp / "raw", names)
+        items = rm.load_items(run)
+        (tmp / "old").mkdir()
+        old = rm.draw_sample(tmp / "old", items, 5, 0, run)
+        exclude = [it["file_name"] for it in old] + ["gone.jpg"]  # gone.jpg: not in this run
+        review = tmp / "review"
+        review.mkdir()
+        new = [it["file_name"] for it in rm.draw_sample(review, items, 15, 1, run, exclude)]
+        assert sorted(new) == sorted(set(names) - set(exclude))  # whole rest, nothing excluded
+        expected = sorted(set(names) - set(exclude))
+        rm.random.Random(1).shuffle(expected)
+        assert new == expected
+        saved = json.loads((review / "sample.json").read_text())
+        assert (saved["population"], saved["n_exclude"], saved["n_excluded"]) == (15, 6, 5)
+        # same list in another order / with duplicates = same list; anything else is refused
+        assert [it["file_name"] for it in rm.draw_sample(review, items, None, 1, run, exclude[::-1] * 2)] == new
+        assert "same --exclude" in expect_value_error(rm.draw_sample, review, items, None, 1, run)
+        assert "same --exclude" in expect_value_error(rm.draw_sample, review, items, None, 1, run, exclude[1:])
+        assert "same --exclude" in expect_value_error(rm.draw_sample, tmp / "old", items, None, 0, run, exclude)
+        assert "larger" in expect_value_error(rm.draw_sample, tmp / "fresh", items, 16, 1, run, exclude)
+
+
 def test_wilson_interval():
     low, high = rm.wilson(15, 300)  # 5 % of 300
     assert abs(low - 0.0305) < 1e-3 and abs(high - 0.0810) < 1e-3

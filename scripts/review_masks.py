@@ -86,9 +86,16 @@ the order is random, any judged prefix is itself a random sample.
 and the sample; a restart with another run, seed or population is refused
 (use a new ``--review-dir``). Decisions are saved as in single-run mode.
 Default review dir: ``<run-dir>/review_random_seed<seed>``.
+``--exclude FILE`` (one file name per line) removes those images from the
+population before the shuffle, e.g. the images of an earlier sample that were
+used for tuning. sample.json stores the list's sha256 and size; a resume with
+another (or no) exclude list is refused, so pass the same ``--exclude`` again.
 
     python scripts/review_masks.py --run-dir data/processed/segmented/B_merged_2026-10-03/Röntgen \\
         --sample 300 --seed 0
+    python scripts/review_masks.py --run-dir data/processed/segmented/D_merged_2026-10-05/Röntgen \\
+        --sample 300 --seed 1 \\
+        --exclude data/processed/segmented/B_merged_2026-10-03/Röntgen/review_random_seed0/sample_names.txt
     python scripts/review_masks.py --summary \\
         --review-dir data/processed/segmented/B_merged_2026-10-03/Röntgen/review_random_seed0
 
@@ -300,12 +307,16 @@ def order_items(review_dir, items, seed, runs):
     return [by_key[k] for k in keys]
 
 
-def draw_sample(review_dir, items, n, seed, run_dir):
+def draw_sample(review_dir, items, n, seed, run_dir, exclude=None):
     """The first ``n`` of ``items`` in the seeded shuffle of their sorted file
     names, saved to sample.json - or, if sample.json exists, that sample
-    (grown to ``n`` if ``n`` is larger; ``n`` None = as saved)."""
+    (grown to ``n`` if ``n`` is larger; ``n`` None = as saved). Names in
+    ``exclude`` are not part of the population."""
     path = review_dir / "sample.json"
-    by_name = {it["file_name"]: it for it in items}
+    exclude = sorted(set(exclude)) if exclude is not None else None
+    exclude_sha256 = hashlib.sha256("\n".join(exclude).encode()).hexdigest() if exclude is not None else None
+    excluded = set(exclude or ())
+    by_name = {it["file_name"]: it for it in items if it["file_name"] not in excluded}
     names = sorted(by_name)
     population_sha256 = hashlib.sha256("\n".join(names).encode()).hexdigest()
     saved = json.loads(path.read_text()) if path.exists() else None
@@ -313,6 +324,9 @@ def draw_sample(review_dir, items, n, seed, run_dir):
         if saved["run_dir"] != str(run_dir.resolve()) or saved["seed"] != seed:
             raise ValueError(f"{path} was drawn from {saved['run_dir']} with seed {saved['seed']}; "
                              f"use that run and seed, or a new --review-dir")
+        if saved.get("exclude_sha256") != exclude_sha256:
+            had = f"an exclude list of {saved['n_exclude']} names" if saved.get("exclude_sha256") else "no exclude list"
+            raise ValueError(f"{path} was drawn with {had}; pass the same --exclude, or use a new --review-dir")
         if saved["population_sha256"] != population_sha256:
             raise ValueError(f"{path}: the run's reviewable images changed since the sample was drawn "
                              f"({saved['population']} then, {len(names)} now); use a new --review-dir")
@@ -333,6 +347,8 @@ def draw_sample(review_dir, items, n, seed, run_dir):
         path.write_text(json.dumps({
             "run_dir": str(run_dir.resolve()), "seed": seed, "population": len(names),
             "population_sha256": population_sha256, "n": n,
+            **({"exclude_sha256": exclude_sha256, "n_exclude": len(exclude),
+                "n_excluded": len(items) - len(names)} if exclude is not None else {}),
             "created": saved["created"] if saved else now, "updated": now, "sample": sample}, indent=1))
     return [by_name[name] for name in sample]
 
@@ -646,6 +662,8 @@ def main():
     parser.add_argument("--sample", type=int, metavar="N",
                         help="Random-sample mode with --run-dir: review N seeded random images, blind. "
                              "Default --review-dir: <run-dir>/review_random_seed<seed>.")
+    parser.add_argument("--exclude", type=Path, metavar="FILE",
+                        help="With --sample: leave these images (one file name per line) out of the population.")
     parser.add_argument("--image-list", type=Path,
                         help="Only show these images: one file name per line, # comments allowed.")
     parser.add_argument("--summary", action="store_true",
@@ -670,6 +688,8 @@ def main():
                          "(no --compare, --image-list, --flagged-only)")
         if args.sample < 1:
             parser.error("--sample needs N >= 1")
+    elif args.exclude:
+        parser.error("--exclude only works with --sample")
     elif args.run_dir and args.review_dir and (args.review_dir / "sample.json").exists():
         parser.error(f"{args.review_dir} is a random-sample review; resume it with --sample N")
     wanted = set(read_image_list(args.image_list)) if args.image_list else None
@@ -707,13 +727,18 @@ def main():
                 (review_dir / "decisions.jsonl").exists() and not (review_dir / "sample.json").exists()):
             raise SystemExit(f"{review_dir} already holds a non-sample review; use a new --review-dir")
         population = load_items(args.run_dir)
+        exclude = read_image_list(args.exclude) if args.exclude else None
         try:
-            items = draw_sample(review_dir, population, args.sample, args.seed, args.run_dir)
+            items = draw_sample(review_dir, population, args.sample, args.seed, args.run_dir, exclude)
         except ValueError as e:
             raise SystemExit(str(e))
         decisions = load_decisions(review_dir)
         judged = sum(it["file_name"] in decisions for it in items)
-        print(f"Random sample: {len(items)} of {len(population)} images (seed {args.seed}, blind), "
+        n_out = len({it["file_name"] for it in population} & set(exclude or ()))
+        if exclude is not None:
+            print(f"Excluded {n_out} of the {len(exclude)} listed images "
+                  f"({len(exclude) - n_out} not reviewable in this run).")
+        print(f"Random sample: {len(items)} of {len(population) - n_out} images (seed {args.seed}, blind), "
               f"{judged} already judged. Decisions -> {review_dir}/")
     else:
         items = load_items(args.run_dir, args.flagged_only, wanted)
