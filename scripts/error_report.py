@@ -82,6 +82,84 @@ FIXES = {
 }
 
 
+# Page style and hover tooltips, shared with compare_report.py. Colours: the
+# dataviz reference palette (light + dark), status colours for good / bad.
+PAGE_CSS = """:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface-1: #fcfcfb;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #898781;
+  --grid: #e1e0d9; --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #eb6834;
+  --callout: #eaf2fc; --good-text: #006300; --bad-text: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface-1: #1a1a19;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
+    --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926;
+    --callout: #16243a; --good-text: #0ca30c; --bad-text: #e66767;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface-1: #1a1a19;
+  --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
+  --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --series-2: #d95926;
+  --callout: #16243a; --good-text: #0ca30c; --bad-text: #e66767;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text-primary);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 19px; margin: 40px 0 6px; }
+p, li { color: var(--text-secondary); }
+.sub { color: var(--text-muted); margin: 0 0 20px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+.callout { background: var(--callout); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+.callout p { color: var(--text-primary); margin: 0; }
+.callout p + p { margin-top: 8px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 16px; }
+.tile .label { color: var(--text-muted); font-size: 13px; }
+.tile .value { font-size: 28px; font-weight: 650; margin: 2px 0; font-variant-numeric: tabular-nums; }
+.note { font-size: 13px; }
+.good { color: var(--good-text); } .bad { color: var(--bad-text); } .muted { color: var(--text-muted); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--text-muted); font-weight: 500; }
+td { font-variant-numeric: tabular-nums; }
+td.left, th.left { text-align: left; }
+.table-wrap { overflow-x: auto; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin: 4px 0 10px; }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+svg text { font-family: inherit; }
+.tip { position: fixed; pointer-events: none; z-index: 10; display: none; max-width: 320px;
+  background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 9px; font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,.15); }
+details { margin-top: 10px; }
+summary { cursor: pointer; color: var(--text-primary); font-weight: 500; }
+code { font-size: 13px; }
+pre { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 13px; }
+footer { margin-top: 48px; color: var(--text-muted); font-size: 13px; }
+"""
+
+TIP_JS = """const tip = document.getElementById("tip");
+document.querySelectorAll("[data-tip]").forEach(g => {
+  g.addEventListener("mousemove", ev => {
+    tip.textContent = g.dataset.tip; tip.style.display = "block";
+    tip.style.left = Math.min(ev.clientX + 12, window.innerWidth - tip.offsetWidth - 8) + "px";
+    tip.style.top = (ev.clientY + 12) + "px";
+  });
+  g.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+});
+"""
+
+
 def domain_key(review_dir):
     return Path(review_dir).resolve().parent.name
 
@@ -313,69 +391,7 @@ def render(stats, max_rate, created, out):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mask error rate</title>
 <style>
-:root {{
-  color-scheme: light;
-  --page: #f9f9f7; --surface-1: #fcfcfb;
-  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #898781;
-  --grid: #e1e0d9; --border: rgba(11,11,11,0.10);
-  --series-1: #2a78d6; --series-2: #eb6834;
-  --callout: #eaf2fc; --good-text: #006300; --bad-text: #b3261e;
-}}
-@media (prefers-color-scheme: dark) {{
-  :root:not([data-theme="light"]) {{
-    color-scheme: dark;
-    --page: #0d0d0d; --surface-1: #1a1a19;
-    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
-    --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
-    --series-1: #3987e5; --series-2: #d95926;
-    --callout: #16243a; --good-text: #0ca30c; --bad-text: #e66767;
-  }}
-}}
-:root[data-theme="dark"] {{
-  color-scheme: dark;
-  --page: #0d0d0d; --surface-1: #1a1a19;
-  --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
-  --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
-  --series-1: #3987e5; --series-2: #d95926;
-  --callout: #16243a; --good-text: #0ca30c; --bad-text: #e66767;
-}}
-* {{ box-sizing: border-box; }}
-body {{ margin: 0; background: var(--page); color: var(--text-primary);
-  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }}
-main {{ max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }}
-h1 {{ font-size: 26px; margin: 0 0 4px; }}
-h2 {{ font-size: 19px; margin: 40px 0 6px; }}
-p, li {{ color: var(--text-secondary); }}
-.sub {{ color: var(--text-muted); margin: 0 0 20px; }}
-.card {{ background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }}
-.callout {{ background: var(--callout); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }}
-.callout p {{ color: var(--text-primary); margin: 0; }}
-.callout p + p {{ margin-top: 8px; }}
-.tiles {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 16px; }}
-.tile .label {{ color: var(--text-muted); font-size: 13px; }}
-.tile .value {{ font-size: 28px; font-weight: 650; margin: 2px 0; font-variant-numeric: tabular-nums; }}
-.note {{ font-size: 13px; }}
-.good {{ color: var(--good-text); }} .bad {{ color: var(--bad-text); }} .muted {{ color: var(--text-muted); }}
-table {{ border-collapse: collapse; width: 100%; font-size: 14px; }}
-th, td {{ padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--grid); vertical-align: top; }}
-th:first-child, td:first-child {{ text-align: left; }}
-th {{ color: var(--text-muted); font-weight: 500; }}
-td {{ font-variant-numeric: tabular-nums; }}
-td.left, th.left {{ text-align: left; }}
-.table-wrap {{ overflow-x: auto; }}
-.legend {{ display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin: 4px 0 10px; }}
-.sw {{ display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; }}
-svg {{ display: block; width: 100%; height: auto; overflow: visible; }}
-svg text {{ font-family: inherit; }}
-.tip {{ position: fixed; pointer-events: none; z-index: 10; display: none; max-width: 320px;
-  background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
-  border-radius: 8px; padding: 6px 9px; font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,.15); }}
-details {{ margin-top: 10px; }}
-summary {{ cursor: pointer; color: var(--text-primary); font-weight: 500; }}
-code {{ font-size: 13px; }}
-pre {{ background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 13px; }}
-footer {{ margin-top: 48px; color: var(--text-muted); font-size: 13px; }}
-</style>
+{PAGE_CSS}</style>
 </head>
 <body>
 <main>
@@ -443,16 +459,7 @@ footer {{ margin-top: 48px; color: var(--text-muted); font-size: 13px; }}
 </main>
 <div class="tip" id="tip"></div>
 <script>
-const tip = document.getElementById("tip");
-document.querySelectorAll("[data-tip]").forEach(g => {{
-  g.addEventListener("mousemove", ev => {{
-    tip.textContent = g.dataset.tip; tip.style.display = "block";
-    tip.style.left = Math.min(ev.clientX + 12, window.innerWidth - tip.offsetWidth - 8) + "px";
-    tip.style.top = (ev.clientY + 12) + "px";
-  }});
-  g.addEventListener("mouseleave", () => {{ tip.style.display = "none"; }});
-}});
-</script>
+{TIP_JS}</script>
 </body>
 </html>
 """
