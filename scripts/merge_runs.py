@@ -19,6 +19,10 @@ line as ``file_name<TAB>reason``. Their record becomes
 overlay in ``--out`` (the base run still has them), listed in dropped.txt.
 A name can't be both taken and dropped.
 
+Drop-only mode: ``--base`` + ``--drop`` without ``--patch`` writes the base
+run minus the dropped images (e.g. to apply an earlier run's drops to a fresh
+full run, so the numbers stay comparable).
+
 Output (same layout as segment_fish.py, so review_masks.py etc. work on it):
     annotations.jsonl, coco/annotations.json, skipped.txt   rebuilt
     masks/, overlays/   hard links to the base/patch files (copies across filesystems)
@@ -31,6 +35,11 @@ Output (same layout as segment_fish.py, so review_masks.py etc. work on it):
         --patch data/processed/segmented/B_bleedfix/full_body \\
         --take-ok-from data/processed/segmented/B_bleedfix/review_compare_full_body:bleedfix \\
         --out data/processed/segmented/B_merged_2026-10-03/full_body
+
+    python scripts/merge_runs.py \\
+        --base data/processed/segmented/D_full_2026-10-05/full_body \\
+        --drop data/processed/segmented/B_merged_2026-10-03/full_body/dropped.txt \\
+        --out data/processed/segmented/D_merged_2026-10-05/full_body
 """
 
 import argparse
@@ -122,14 +131,19 @@ def link_or_copy(src, dst):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", type=Path, required=True, help="full segment_fish.py run dir")
-    parser.add_argument("--patch", type=Path, required=True, help="targeted re-run dir")
+    parser.add_argument("--patch", type=Path, help="targeted re-run dir (leave out for drop-only mode)")
     parser.add_argument("--take", type=Path, help="file with the names to take from --patch")
     parser.add_argument("--take-ok-from", metavar="REVIEW_DIR:RUN",
                         help="take every image judged ok for RUN in this compare-mode review dir")
     parser.add_argument("--drop", type=Path, help="file_name<TAB>reason lines: exclude these images")
     parser.add_argument("--out", type=Path, required=True, help="new run dir (must not exist)")
     args = parser.parse_args()
-    if args.take is None and args.take_ok_from is None:
+    if args.patch is None:
+        if args.take is not None or args.take_ok_from is not None:
+            parser.error("--take/--take-ok-from need --patch")
+        if args.drop is None:
+            parser.error("give --patch (with --take and/or --take-ok-from) and/or --drop")
+    elif args.take is None and args.take_ok_from is None:
         parser.error("give --take and/or --take-ok-from")
     if args.out.exists():
         raise SystemExit(f"{args.out} already exists - choose a new --out")
@@ -143,7 +157,7 @@ def main():
     take = sorted(take)
 
     base = read_records(args.base)
-    patch = read_records(args.patch)
+    patch = read_records(args.patch) if args.patch is not None else {}
     merged = merge_records(base, patch, take)
     drops = read_drop_list(args.drop.read_text()) if args.drop is not None else {}
     merged = apply_drops(merged, drops, take)
@@ -165,18 +179,18 @@ def main():
     cfg = {
         "merged": {
             "created": datetime.datetime.now().isoformat(timespec="seconds"), **git_state(),
-            "base": str(args.base), "patch": str(args.patch),
+            "base": str(args.base), "patch": str(args.patch) if args.patch else None,
             "take": str(args.take) if args.take else None, "take_ok_from": args.take_ok_from,
             "n_taken": len(take), "taken_sha256": hashlib.sha256("\n".join(take).encode()).hexdigest(),
             "drop": str(args.drop) if args.drop else None, "n_dropped": len(drops),
         },
         "base_config": json.loads((args.base / "run_config.json").read_text()),
-        "patch_config": json.loads((args.patch / "run_config.json").read_text()),
+        "patch_config": json.loads((args.patch / "run_config.json").read_text()) if args.patch else None,
         # review_masks.py reads settings.raw_dir; both runs share it.
         "settings": {"raw_dir": json.loads((args.base / "run_config.json").read_text())["settings"]["raw_dir"]},
     }
     (args.out / "run_config.json").write_text(json.dumps(cfg, indent=2))
-    print(f"Took {len(take)} image(s) from {args.patch}, dropped {len(drops)}, "
+    print(f"Took {len(take)} image(s) from {args.patch or '(no patch)'}, dropped {len(drops)}, "
           f"{len(merged) - len(take) - len(drops)} unchanged from {args.base}.")
     print_summary(coco, skipped)
 

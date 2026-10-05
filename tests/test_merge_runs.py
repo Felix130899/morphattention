@@ -125,6 +125,28 @@ def test_cli_drop_excludes_from_coco_and_masks():
         assert (out / "skipped.txt").read_text() == ""
 
 
+def test_cli_drop_only_mode_needs_no_patch():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        base = fake_run(d / "base", [rec("a.jpg", "base"), rec("b.jpg", "base")])
+        (d / "drop.txt").write_text("b.jpg\tbleed\n")
+        subprocess.run([sys.executable, str(SCRIPT), "--base", str(base), "--drop", str(d / "drop.txt"),
+                        "--out", str(d / "out")], check=True, capture_output=True)
+        out = d / "out"
+        coco = json.loads((out / "coco" / "annotations.json").read_text())
+        assert [i["file_name"] for i in coco["images"]] == ["a.jpg"]
+        assert (out / "masks" / "a.png").read_text() == "base" and not (out / "masks" / "b.png").exists()
+        assert (out / "dropped.txt").read_text() == "b.jpg\tbleed\n"
+        cfg = json.loads((out / "run_config.json").read_text())
+        assert cfg["merged"]["patch"] is None and cfg["patch_config"] is None and cfg["merged"]["n_taken"] == 0
+        # without --patch: --take is refused, and --drop is required
+        (d / "take.txt").write_text("a.jpg\n")
+        for extra in (["--drop", str(d / "drop.txt"), "--take", str(d / "take.txt")], []):
+            r = subprocess.run([sys.executable, str(SCRIPT), "--base", str(base), "--out", str(d / "out2"), *extra],
+                               capture_output=True)
+            assert r.returncode != 0 and not (d / "out2").exists(), extra
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in list(globals().items()) if name.startswith("test_")]
     for name, fn in tests:
