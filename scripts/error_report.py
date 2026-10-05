@@ -165,13 +165,14 @@ def domain_key(review_dir):
 
 
 def run_settings(run_dir):
-    """Settings the masks were made with; for a merged run, base overlaid with the patch run."""
+    """Settings the masks were made with; for a merged run, base overlaid with the patch run
+    (drop-only merges have no patch run)."""
     path = Path(run_dir) / "run_config.json"
     if not path.exists():
         return {}
     config = json.loads(path.read_text())
     if "merged" in config:
-        return {**config["base_config"]["settings"], **config["patch_config"]["settings"]}
+        return {**config["base_config"]["settings"], **((config["patch_config"] or {}).get("settings") or {})}
     return config.get("settings", {})
 
 

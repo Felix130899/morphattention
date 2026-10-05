@@ -73,6 +73,17 @@ def test_domain_stats_and_page():
         assert "f0.jpg" not in page  # no file names (they carry catalog numbers)
 
 
+
+def test_run_settings_of_merged_runs():
+    with tempfile.TemporaryDirectory() as tmp:
+        run = Path(tmp)
+        cfg = {"merged": {}, "base_config": {"settings": {"a": 1, "b": 1}}, "patch_config": {"settings": {"b": 2}}}
+        (run / "run_config.json").write_text(json.dumps(cfg))
+        assert er.run_settings(run) == {"a": 1, "b": 2}
+        cfg["patch_config"] = None  # merge_runs.py drop-only mode
+        (run / "run_config.json").write_text(json.dumps(cfg))
+        assert er.run_settings(run) == {"a": 1, "b": 1}
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
