@@ -17,10 +17,10 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 - Scope (2026-10-03): part 1 = raw → labels → masks → random review + error report → curated set → split → manifest, one command, human decisions as text files keyed by image SHA-256. Plan: vault/thesis-log/tasks/pipeline-part-1-cleanup.md
 
 ## Next steps
-1. Neo + supervisor: decide how D's X-rays are judged (decision note §7): seed 1 14.7 % vs. seed 2 ≈ 9.0 % (inferred), pooled 11.8 %. Options written there: pooled number (fails), or a third sample / a rule for combining sessions agreed **before** looking. To make seed 2 exact for D: judge the 4 images of `data/processed/segmented/review_compare_BE_Röntgen_seed2/D_unknown.txt` in D
-2. If D's X-rays pass: final set = `D_merged_2026-10-05` (both domains); rerun `split_specimens.py` + `build_manifest.py` with `--segmented data/processed/segmented/D_merged_2026-10-05`. If not: the next X-ray lever is bleed (largest category: 12 of B's 38 on seed 2, 14 of D's 44 on seed 1), not fins
-3. Decide which copy of each byte-identical pair to keep (`duplicates.csv`) and normalise the species vocabulary; then rerun split + manifest
-4. Close part 1: vault/thesis-log/tasks/pipeline-part-1-cleanup.md, checklist vault/thesis-log/tasks/clean-segmented-dataset-with-structured-labels.md
+1. Neo: go through the label proposal sheets in `data/processed/label_decisions/` (gitignored; rebuilt by `make_proposals.py` there) and edit the `decision` column where you disagree: `genus_spelling.csv` (32 genus spellings → one class each), `catalog_conflicts.csv` (26 name sets across genera: rename / keep / drop), `needs_review.csv` (9 rows). Species-only conflicts (61 catalogs, same genus) are left as is: classes are genera. With the proposals, 0 of 41 duplicate sets disagree on genus → keep one copy per set automatically
+2. Neo + supervisor: vault/thesis-log/tasks/2026-10-08-supervisor-questions-part-1.md (which number decides the X-rays: seed 1 14.7 %, seed 2 ≈ 9.0 %, pooled 11.8 %; is origin encoded anywhere)
+3. Claude, after 1: apply the decision sheets in the label step (global genus/species map, per-catalog drops, needs_review fixes, one copy per duplicate set), then rerun `split_specimens.py` + `build_manifest.py` on `D_merged_2026-10-05` (or the X-ray set 2 decides)
+4. Close part 1: vault/thesis-log/tasks/pipeline-part-1-cleanup.md (rebuild section to be rewritten around D: one full run + drops), checklist vault/thesis-log/tasks/clean-segmented-dataset-with-structured-labels.md
 
 ## Detailed log
 See vault/thesis-log/ (symlinked, see below)
