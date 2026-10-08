@@ -93,6 +93,47 @@ def test_page_is_valid_offline_and_has_no_file_names():
         assert "merged" in page  # named as empty in both runs
 
 
+def test_random_mode_needs_the_exact_sample_and_words_rates_for_the_whole_set():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        review = make_compare(tmp, "Röntgen", changed=(60, 1000))
+        names = [f"Fish_NMW{k}_WEB.jpg" for k in range(len(PAIRS))]
+        sample = tmp / "sample.json"
+        sample.write_text(json.dumps({"seed": 2, "population": 4431, "sample": names}))
+        s = cr.domain_stats(review, "B", "D", sample=sample)
+        assert (s["population"], s["sample_seed"]) == (4431, 2)
+        page = cr.render([s], "B", "D", "2026-10-08", "cmd", mode="random", max_rate=0.5)
+        assert "random images of all 4,431" in page and "error rate (whole set)" in page
+        assert "random sample of the whole set" in page and "changed</strong> images only" not in page
+        assert "What this means for the whole set" not in page  # no scaling of changed images
+        assert "Acceptance rule (error rate ≤ 50 %)" in page
+        assert page.count("✓ accepted") == 1 and page.count("✗ not accepted") == 1  # D 3/6 = 50 %, B 4/6
+        sample.write_text(json.dumps({"seed": 2, "population": 4431, "sample": names[:-1]}))
+        try:
+            cr.domain_stats(review, "B", "D", sample=sample)
+        except SystemExit:
+            return
+        raise AssertionError("review that is not the sample was accepted")
+
+
+def test_list_mode_and_groups():
+    with tempfile.TemporaryDirectory() as tmp:
+        review = make_compare(Path(tmp), "Röntgen", changed=(60, 1000))
+        fin = {"Fish_NMW0_WEB.jpg", "Fish_NMW1_WEB.jpg", "Fish_NMW2_WEB.jpg"}
+        ok = {f"Fish_NMW{k}_WEB.jpg" for k in (3, 4, 5)}
+        a = cr.domain_stats(review, "B", "D", group=("fin_cut", fin))
+        b = cr.domain_stats(review, "B", "D", group=("ok", ok))
+        assert (a["label"], a["n"], b["label"], b["n"]) == ("X-rays · fin_cut", 3, "X-rays · ok", 3)
+        assert a["outcome"] == {"fixed": 2, "still": 1, "both_ok": 0, "broken": 0}
+        assert b["outcome"] == {"fixed": 0, "still": 1, "both_ok": 1, "broken": 1}
+        none = cr.domain_stats(review, "B", "D", group=("other", {"Fish_NMW99_WEB.jpg"}))
+        assert none["n"] == 0 and "changed" not in none  # a group nobody judged yet does not crash
+        page = cr.render([a, b], "B", "D", "2026-10-08", "cmd", mode="list", note="Dev list from seed 1.")
+        assert "chosen list, not a random sample" in page and "Dev list from seed 1." in page
+        assert "listed images" in page and "What this means for the whole set" not in page
+        assert "random changed images" not in page
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in list(globals().items()) if name.startswith("test_")]
     for name, fn in tests:
