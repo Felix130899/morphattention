@@ -59,6 +59,9 @@ def test_rules_fired():
                                    "wrong_region_dropped", "wrong_region_reprompt"]
     assert mc.rules_fired({"qa": {}, "instances": [{"bleed_fallback": "none", "wrong_region": "none"}]}) == []
     assert mc.rules_fired({"status": "ok", "qa": {}, "instances": [{}]}) == []  # B records lack the D fields
+    fins = [{"fin_extension": "extended", "fin_growth": 0.05}, {"fin_extension": "guarded", "fin_growth": 0.9},
+            {"fin_extension": "extended", "fin_growth": 0.0}, {"fin_extension": "skipped", "fin_growth": 0.0}]
+    assert mc.rules_fired({"qa": {}, "instances": fins}) == ["fin_extended", "fin_guarded"]
 
 
 def test_cli_writes_lists_counts_and_seeded_pick():

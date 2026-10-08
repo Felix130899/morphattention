@@ -6,7 +6,7 @@ when IoU < ``--threshold``. Only images that are status ok in both runs are
 compared; the ones ok in only one run are counted separately. Also counts how
 often each setting-D rule fired in the after run (instance fields
 ``bleed_fallback``, ``wrong_region``, ``far_pieces_dropped``,
-``holes_filled_px``; image field ``qa.wrong_region_dropped``).
+``holes_filled_px``, ``fin_extension``; image field ``qa.wrong_region_dropped``).
 
 Writes into ``--after`` (nothing else is changed):
     changed_vs_<name>.tsv     every compared image: file_name, iou, pixels before/after, rules fired
@@ -67,7 +67,10 @@ def compare_one(job):
 
 
 def rules_fired(rec):
-    """Setting-D rules that changed something in this record, e.g. ['bleed_inverse', 'holes_filled']."""
+    """Rules (setting D + fin extension) that fired in this record, e.g. ['bleed_inverse', 'holes_filled'].
+
+    ``fin_guarded`` changed nothing: the guard kept the mask as it was.
+    """
     fired = set()
     for inst in rec.get("instances", []):
         if inst.get("bleed_fallback") in FALLBACK_SOURCES:
@@ -78,6 +81,10 @@ def rules_fired(rec):
             fired.add("far_pieces_dropped")
         if inst.get("holes_filled_px", 0) > 0:
             fired.add("holes_filled")
+        if inst.get("fin_extension") == "extended" and inst.get("fin_growth", 0) > 0:
+            fired.add("fin_extended")
+        elif inst.get("fin_extension") == "guarded":
+            fired.add("fin_guarded")
     if rec.get("qa", {}).get("wrong_region_dropped", 0) > 0:
         fired.add("wrong_region_dropped")
     return sorted(fired)

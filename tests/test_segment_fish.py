@@ -188,7 +188,8 @@ def default_args(**kw):
     a = dict(raw_dir="raw", prompt="center", max_side=2048, dedup_containment=0.8, tiny_area_frac=0.001,
              giant_area_frac=0.9, candidate="score", mask_threshold=0.0, margin_frac=0.0, min_component_frac=0.0,
              image_list=None, bleed_outside_frac=0.0, bleed_fill=(0.2, 0.9), bleed_bg_border=0.3,
-             bleed_max_box_edge=0.1, wrong_region_fix=False, keep_near_frac=0.0, fill_holes_frac=0.0)
+             bleed_max_box_edge=0.1, wrong_region_fix=False, keep_near_frac=0.0, fill_holes_frac=0.0,
+             fin_threshold=None, fin_max_growth=0.3)
     a.update(kw)
     return SimpleNamespace(**a)
 
@@ -216,6 +217,7 @@ def test_resume_of_pre_option_run_accepts_defaults_only():
         for changed in (dict(candidate="largest"), dict(mask_threshold=-2.0), dict(margin_frac=0.03),
                         dict(min_component_frac=0.01), dict(bleed_outside_frac=0.02),
                         dict(wrong_region_fix=True), dict(keep_near_frac=0.02), dict(fill_holes_frac=0.02),
+                        dict(fin_threshold=-6.0),
                         dict(image_list=Path("dev.txt"))):
             try:
                 sf.prepare_run_config(run_dir, sf.run_settings(default_args(**changed),
@@ -501,6 +503,39 @@ def test_fill_small_holes_fills_small_holes_not_big_ones_or_other_fish():
     other[30, 31] = True  # another fish's pixel inside the hole
     out, added = sf.fill_small_holes(speckled, 0.02, blocked=other)
     assert added == 1 and not out[30, 31]
+
+
+def test_extend_fins_adds_connected_faint_parts_only():
+    logits = np.full((100, 100), -10.0)
+    logits[30:60, 20:80] = 5.0       # body: 1800 px
+    logits[20:30, 40:60] = -3.0      # faint fin on the body: 200 px
+    logits[80:90, 10:20] = -3.0      # faint blob not touching the fish
+    mask = logits > -1
+    out, source, growth, border_px = sf.extend_fins(mask, logits, -6.0, 0.3)
+    assert source == "extended" and (out == (mask | rect_mask(100, 100, 40, 20, 60, 30))).all()
+    assert abs(growth - 200 / 1800) < 1e-9 and border_px == 0
+    assert (sf.extend_fins(mask, logits, -2.0, 0.3)[0] == mask).all()  # fin below -2: unchanged
+
+
+def test_extend_fins_drops_added_pieces_on_the_image_border():
+    logits = np.full((100, 100), -10.0)
+    logits[30:60, 20:80] = 5.0
+    logits[20:30, 40:60] = -3.0      # fin
+    logits[60:100, 70:80] = -3.0     # dark plate running from the fish to the image border
+    mask = logits > -1
+    out, source, growth, border_px = sf.extend_fins(mask, logits, -6.0, 0.3)
+    assert source == "extended" and (out == (mask | rect_mask(100, 100, 40, 20, 60, 30))).all()
+    assert border_px == 400 and abs(growth - 200 / 1800) < 1e-9
+
+
+def test_extend_fins_guard_keeps_the_mask_when_it_would_grow_too_much():
+    logits = np.full((100, 100), -10.0)
+    logits[40:50, 40:60] = 5.0       # small fish: 200 px
+    logits[30:70, 30:70] = np.maximum(logits[30:70, 30:70], -4.0)  # faint halo off the border: +1400 px
+    mask = logits > -1
+    out, source, growth, border_px = sf.extend_fins(mask, logits, -6.0, 0.3)
+    assert source == "guarded" and (out == mask).all() and out is not mask
+    assert abs(growth - 1400 / 200) < 1e-9 and border_px == 0
 
 
 if __name__ == "__main__":

@@ -79,6 +79,13 @@ image edge; ``far_pieces_dropped``), ``--fill-holes-frac`` fills small holes
 (speckled fins, X-ray grids; ``holes_filled_px``). Numbers behind all three:
 vault/thesis-log/experiments/2026-10-04-random-review-fixes.md
 
+Fin extension (``--fin-threshold``, default off): after all rules above, each
+mask thresholded from its own SAM candidate also gets the connected parts of
+that candidate above the lower fin threshold (faint X-ray fin rays), except
+added pieces touching the image border; if that grows it by more than
+``--fin-max-growth`` it stays as is (``fin_extension``, ``fin_growth``,
+``fin_border_px``; flag ``fin_guarded``). See ``extend_fins()``.
+
 ``--image-list`` restricts a run to the listed files (e.g. a dev set), one
 path per line relative to ``--raw-dir`` as in COCO ``file_name``.
 
@@ -167,7 +174,7 @@ FAR_PIECE_MAX_FRAC = 0.1
 LEGACY_DEFAULTS = {"candidate": "score", "mask_threshold": 0.0, "margin_frac": 0.0,
                    "min_component_frac": 0.0, "image_list": None, "image_list_sha256": None,
                    "bleed_outside_frac": 0.0, "wrong_region_fix": False, "keep_near_frac": 0.0,
-                   "fill_holes_frac": 0.0}
+                   "fill_holes_frac": 0.0, "fin_threshold": None}
 
 
 def iter_images(root: Path):
@@ -661,6 +668,38 @@ def fill_small_holes(mask, max_frac, blocked=None):
     return mask | add, int(add.sum())
 
 
+def extend_fins(mask, logits, fin_threshold, max_growth):
+    """Add the faint parts of the same SAM candidate (logits > ``fin_threshold``)
+    that are connected to the mask: X-ray fin rays and spines SAM's cut leaves out.
+
+    ``logits`` are the candidate's own logits, so a lower ``fin_threshold`` only
+    widens the mask (8-connected pieces not touching the mask are ignored).
+    Added pieces (8-connected, outside the mask) that touch the image border
+    are dropped: at low thresholds the dark plate and scanner edges come in
+    from the border, fins grow off the body. Guard: if the mask would still
+    grow by more than ``max_growth`` (fraction of its area), it is kept as is.
+    Numbers behind both: vault/thesis-log/decisions/2026-10-08-xray-fin-extension.md
+    Returns (mask, "extended" / "guarded", growth = added px / mask px,
+    px dropped as border pieces).
+    """
+    import cv2
+
+    ext = mask | (logits > fin_threshold)
+    n, labels = cv2.connectedComponents(ext.astype(np.uint8), connectivity=8)
+    if n > 2:
+        ext = np.isin(labels, np.unique(labels[mask]))
+    add = ext & ~mask
+    n, labels = cv2.connectedComponents(add.astype(np.uint8), connectivity=8)
+    border = np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
+    on_border = np.isin(labels, border[border > 0])
+    border_px = int(on_border.sum())
+    ext = mask | (add & ~on_border)
+    growth = float(ext.sum() / mask.sum() - 1)
+    if growth > max_growth:
+        return mask.copy(), "guarded", growth, border_px
+    return ext, "extended", growth, border_px
+
+
 def grow_margins(masks, margin_frac):
     """Grow every instance by a size-relative margin without touching other fish.
 
@@ -859,13 +898,34 @@ def segment_image(image, prompt, sam, detector, args):
             areas[k] = masks[k].sum()
     wrong_dropped = int((wrong_source == "dropped").sum())
 
+    # Fin extension: only for masks thresholded from their own logits. An
+    # inverted background, an unresolved bleed or wrong region would only
+    # take in more background at a lower threshold.
+    fin_source = np.array(["none"] * n_detections, dtype=object)
+    fin_growth = np.zeros(n_detections)
+    fin_border = np.zeros(n_detections, dtype=int)
+    if args.fin_threshold is not None:
+        for k in range(n_detections):
+            if not masks[k].any():
+                continue
+            own = wrong_source[k] == "reprompt" or (
+                wrong_source[k] == "none" and not inverted[k] and bleed_source[k] != "unresolved")
+            if not own:
+                fin_source[k] = "skipped"
+                continue
+            masks[k], fin_source[k], fin_growth[k], fin_border[k] = extend_fins(
+                masks[k], chosen_logits[k], args.fin_threshold, args.fin_max_growth)
+            if fin_source[k] == "extended":
+                edge_thr[k] = args.fin_threshold
+
     def keep(idx):
         nonlocal masks, boxes, scores, iou, chosen, cand_areas, chosen_logits
-        nonlocal edge_thr, bleed_source, chosen_outside, wrong_source
+        nonlocal edge_thr, bleed_source, chosen_outside, wrong_source, fin_source, fin_growth, fin_border
         masks, iou, chosen = masks[idx], iou[idx], chosen[idx]
         cand_areas, chosen_logits = cand_areas[idx], chosen_logits[idx]
         edge_thr, bleed_source, chosen_outside = edge_thr[idx], bleed_source[idx], chosen_outside[idx]
-        wrong_source = wrong_source[idx]
+        wrong_source, fin_source, fin_growth = wrong_source[idx], fin_source[idx], fin_growth[idx]
+        fin_border = fin_border[idx]
         boxes = boxes[idx] if boxes is not None else None
         scores = scores[idx] if scores is not None else None
 
@@ -906,6 +966,7 @@ def segment_image(image, prompt, sam, detector, args):
         "cand_areas": cand_areas, "edge_uncertain": edge_uncertain, "margin_px": margin_px,
         "bleed_source": list(bleed_source), "chosen_outside": chosen_outside,
         "wrong_source": list(wrong_source), "far_dropped": far_dropped, "holes_filled": holes_filled,
+        "fin_source": list(fin_source), "fin_growth": fin_growth, "fin_border": fin_border,
         "n_detections": n_detections, "empty_dropped": empty_dropped, "wrong_dropped": wrong_dropped,
         "dropped": [(b, s, new_index.get(j)) for b, s, j in dropped_info],
         "contested_frac": contested / img_area,
@@ -954,6 +1015,12 @@ def build_record(rel_name, orig_size, work_size, result, args):
                               if result["boxes"] is not None else None),
             "far_pieces_dropped": int(result["far_dropped"][k]),
             "holes_filled_px": int(result["holes_filled"][k]),
+            # Fin extension (none = off / skipped / extended / guarded), the
+            # growth it found (also when the guard rejected it) and the pixels
+            # it dropped as border pieces (working resolution).
+            "fin_extension": result["fin_source"][k],
+            "fin_growth": round(float(result["fin_growth"][k]), 4),
+            "fin_border_px": int(result["fin_border"][k]),
         })
         if result["bleed_source"][k] in ("candidate", "inverse"):
             flags.append("bleed_fixed")
@@ -963,9 +1030,12 @@ def build_record(rel_name, orig_size, work_size, result, args):
             flags.append("wrong_region_fixed")
         elif result["wrong_source"][k] == "unresolved":
             flags.append("wrong_region_unresolved")
+        if result["fin_source"][k] == "guarded":
+            flags.append("fin_guarded")
         # Fix flags stay off the overlay: they would tell a blind
         # review_masks.py --compare which run an overlay comes from.
-        labels.append(" ".join([str(k)] + [f for f in flags if not f.startswith(("bleed_", "wrong_region_"))]))
+        labels.append(" ".join([str(k)] + [f for f in flags
+                                           if not f.startswith(("bleed_", "wrong_region_", "fin_"))]))
     image_flags = sorted({f for inst in instances for f in inst["flags"]})
     if len(instances) > 1:
         image_flags.append("multi_instance")
@@ -1023,6 +1093,7 @@ def run_settings(args, image_names=None):
         "margin_frac": args.margin_frac, "min_component_frac": args.min_component_frac,
         "bleed_outside_frac": args.bleed_outside_frac, "wrong_region_fix": args.wrong_region_fix,
         "keep_near_frac": args.keep_near_frac, "fill_holes_frac": args.fill_holes_frac,
+        "fin_threshold": args.fin_threshold,
         "image_list": str(Path(args.image_list).resolve()) if args.image_list is not None else None,
         "image_list_sha256": (hashlib.sha256("\n".join(sorted(image_names)).encode()).hexdigest()
                               if image_names is not None else None),
@@ -1038,6 +1109,8 @@ def run_settings(args, image_names=None):
                         reprompt_min_rel_area=REPROMPT_MIN_REL_AREA)
     if args.keep_near_frac > 0:
         settings.update(far_piece_max_frac=FAR_PIECE_MAX_FRAC)
+    if args.fin_threshold is not None:
+        settings.update(fin_max_growth=args.fin_max_growth)
     if args.prompt == "dino":
         settings.update(dino_checkpoint=DINO_CHECKPOINT, dino_text=args.dino_text,
                         dino_box_threshold=args.dino_box_threshold)
@@ -1211,6 +1284,14 @@ def main():
                         help="Fill holes of an instance of at most this fraction of its area (speckled "
                              "fins, X-ray grids), never into another fish. 0 = off; 0.02 fit the "
                              "reviewed sample.")
+    parser.add_argument("--fin-threshold", type=float, default=None,
+                        help="After all other rules, add the parts of each mask's own SAM candidate with "
+                             "logits above this value that touch the mask but not the image border "
+                             "(faint X-ray fins; see "
+                             "extend_fins()). Must be below --mask-threshold. Default off; -6 for X-rays.")
+    parser.add_argument("--fin-max-growth", type=float, default=0.3,
+                        help="With --fin-threshold: keep the mask unchanged if the extension would grow it "
+                             "by more than this fraction of its area (default 0.3).")
     parser.add_argument("--image-list", type=Path, default=None,
                         help="Text file with one file name per line, relative to --raw-dir as in COCO "
                              "file_name ('#' comment lines and blank lines ignored). Only these images "
@@ -1218,6 +1299,8 @@ def main():
     parser.add_argument("--resume", action="store_true",
                         help="Continue an interrupted run, skipping images already in annotations.jsonl.")
     args = parser.parse_args()
+    if args.fin_threshold is not None and args.fin_threshold >= args.mask_threshold:
+        parser.error("--fin-threshold must be below --mask-threshold")
 
     # If raw_dir not provided, prompt user to choose
     if args.raw_dir is None:
