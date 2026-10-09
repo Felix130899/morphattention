@@ -13,7 +13,8 @@ visible why an image is not used. Columns:
     mask_path        the image's mask PNG in the curated run (usable images only)
     n_instances      number of fish masks
     status, reason   usable / dropped / skipped; reason for dropped and skipped
-                     (mask review, no detection, or no catalog number)
+                     (label decision, mask review, no detection, or no catalog
+                     number); a label drop wins over the mask status
     needs_review     from labels.csv
     split            train / val / test / train_only, "none" when not usable
     genus_evaluated  the genus is an evaluated class in this domain
@@ -55,7 +56,10 @@ def build_rows(labels, segmented, split_rows, raw_dirs, hash_cache):
         state, reason, n_inst = status[name]
         s = split_rows.get(name)
         stem = Path(name).stem
-        if state == "ok" and s is None:
+        if r.get("label_drop"):
+            mask_note = f" (mask {state}{': ' + reason if reason else ''})" if state != "ok" else ""
+            state, reason = "dropped", r["label_drop"] + mask_note
+        elif state == "ok" and s is None:
             state, reason = "dropped", "no catalog number"
         elif state == "ok":
             state = "usable"

@@ -1,0 +1,10 @@
+sha256	reason	note	decision
+56edce4adf15a46f7a9feba125fe3b931445b6bca9912eae410ea9414afe182d	catalog_prefix_typo	prefix typo MNW -> NMW	set catalog NMW<number>
+2faa8423170f1c300b4758ff2865bc657c9a18a8ae4715f2dacce72d04ad1b42	catalog_prefix_typo	prefix typo MNW -> NMW	set catalog NMW<number>
+7ca969c6e457a0571bb25b8a6759a907f706c621e97f5261dac51579abb8f174	catalog_prefix_typo	prefix typo MNW -> NMW	set catalog NMW<number>
+a193a7ee06065a87688c3a781135ba863251daa9b93241f9a3f0e4a211eec2c6	no_catalog_anchor	neotype from the Swedish Museum of Natural History, no NMW number	keep, own specimen group NRM<number>
+7e0730bb68cfeb690bca31e0575fed106d0f1e7ddff68a10d9383a73ca948274	no_catalog_anchor	number without prefix; check it is an NMW number	set catalog NMW<number>
+30c8f057c58437eee8f3ad36019683390516143e013e4051ef98801b01f7b963	no_catalog_anchor	no catalog number: cannot be grouped by specimen, may duplicate another specimen	drop
+43db322e1369cbf9c4cbdfa25b6ea45e3fa4a2f182ab5d55214ba0bde2701b22	no_catalog_anchor	a figure from a 1928 publication, not a specimen image	drop
+1dd9c96c339abac9a0e24494678b7eb0aafec013f732144825c23db824d1163a	no_catalog_anchor	no catalog number: cannot be grouped by specimen, may duplicate another specimen	drop
+f722ba59dd1942836aedab4487672b00ea9facd5d80a6640949a8f2bae8478e3	no_catalog_anchor	prefix typo MW -> NMW	set catalog NMW<number>

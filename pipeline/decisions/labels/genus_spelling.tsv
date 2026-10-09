@@ -1,0 +1,33 @@
+from_genus	to_genus	images_from	images_to	confidence	note	decision
+Achilognathus	Acheilognathus	10	3	high	misspelling	accept
+Aliichthys	Ailiichthys	6	6	high	misspelling	accept
+Ambliopus	Amblyopus	4	2	high	misspelling	accept
+Apphyosemion	Aphyosemion	3	156	high	misspelling	accept
+Astianax	Astyanax	14	14	high	misspelling	accept
+Brachyplatistoma	Brachyplatystoma	2	7	high	misspelling	accept
+Callyonymus	Callionymus	1	6	high	misspelling	accept
+Chilodactylus	Cheilodactylus	2	4	high	misspelling	accept
+Chirodon	Cheirodon	46	3	high	misspelling / old spelling	accept
+Crenilabris	Crenilabrus	1	12	high	misspelling	accept
+Curimatis	Curimatus	2	91	high	misspelling	accept
+Gastropelecus	Gasteropelecus	6	3	high	misspelling	accept
+Hemirhamphus	Hemiramphus	2	4	high	old spelling	accept
+Hyppoglossina	Hippoglossina	4	2	high	misspelling	accept
+Mastacemblus	Mastacembelus	5	9	high	misspelling	accept
+Muenkhausia	Moenkhausia	14	29	high	misspelling	accept
+Pargus	Pagrus	1	8	high	misspelling	accept
+Petroscrites	Petroscirtes	2	2	high	misspelling	accept
+Pimpeleptus	Pimelepterus	2	2	high	misspelling	accept
+Pseudorombus	Pseudorhombus	2	22	high	misspelling	accept
+Rinelocaria	Rineloricaria	5	2	high	misspelling	accept
+Serrasalmo	Serrasalmus	6	21	high	old spelling	accept
+Tetrodon	Tetraodon	20	2	high	old spelling	accept
+Trigonoptera	Trygonoptera	1	15	high	misspelling	accept
+Tripterygium	Tripterygion	3	2	high	misspelling	accept
+Nemachilus	Nemacheilus	9	13	medium	old spelling; many species now in other genera	accept
+Noemacheilus	Nemacheilus	6	13	medium	old spelling; many species now in other genera	accept
+Chaetostomus	Chaetostoma	175	14	medium	old spelling of the same genus; 175 images	accept
+Chondrostomus	Chondrostoma	12	374	medium	old form of the same genus name	accept
+Glyphidodon	Glyphisodon	7	8	medium	two historical spellings of one genus (today mostly Abudefduf)	
+Hypsolepis	Hypsilepis	2	3	low	both spellings in use; check	
+Gypselichthys	Cypselichthys	1	2	low	probably a misspelling; check	accept

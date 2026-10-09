@@ -41,6 +41,18 @@ def test_catalog_number_parsing():
     assert nums("Unknown_fish_WEB.jpg") == set()
 
 
+def test_catalog_keys_fall_back_to_decided_catalog_number():
+    assert ss.catalog_keys({"file_name": "A_b_NMW12345-6_WEB.jpg", "catalog_number": "NMW12345"})[0] == {
+        ("NMW", 12345), ("NMW", 12346)}
+    assert ss.catalog_keys({"file_name": "A_b_MW12345_WEB.jpg", "catalog_number": "NMW12345"})[0] == {("NMW", 12345)}
+    assert ss.catalog_keys({"file_name": "A_b_NRM(x)12345_WEB.jpg", "catalog_number": "NRM12345"})[0] == {
+        ("NRM", 12345)}
+    assert ss.catalog_keys({"file_name": "A_b_NoNumber_WEB.jpg", "catalog_number": ""})[0] == set()
+    # another museum's number never joins the NMW specimen with the same digits
+    groups = ss.build_groups({"a": {("NMW", 12345)}, "b": {("NRM", 12345)}})
+    assert groups["a"] != groups["b"]
+
+
 def test_genus_of():
     assert ss.genus_of("Salmo trutta") == "Salmo"
     assert ss.genus_of("Loricaria(Rineloricaria) lima") == "Loricaria"
@@ -105,27 +117,33 @@ def test_manifest_rows():
         tmp = Path(tmp)
         raw = tmp / "raw" / "full_body"
         raw.mkdir(parents=True)
-        names = ["A_b_NMW11111_WEB.jpg", "A_b_NMW22222_WEB.jpg", "A_b_NMW33333_WEB.jpg", "A_b_WEB.jpg"]
+        names = ["A_b_NMW11111_WEB.jpg", "A_b_NMW22222_WEB.jpg", "A_b_NMW33333_WEB.jpg", "A_b_WEB.jpg",
+                 "A_b_NMW44444_WEB.jpg"]
         for k, n in enumerate(names):
             (raw / n).write_bytes(bytes([k]))
         write_run(tmp / "seg" / "full_body", raw, [
             {"file_name": names[0], "status": "ok", "instances": [{}, {}]},
             {"file_name": names[1], "status": "dropped", "reason": "after fallback: bleed"},
             {"file_name": names[2], "status": "skipped", "instances": []},
-            {"file_name": names[3], "status": "ok", "instances": [{}]}], [names[0], names[3]])
+            {"file_name": names[3], "status": "ok", "instances": [{}]},
+            {"file_name": names[4], "status": "ok", "instances": [{}]}], [names[0], names[3], names[4]])
         (tmp / "seg" / "full_body" / "skipped.txt").write_text(f"{names[2]}\tno_detection\n")
         labels = [{"file_name": f"full_body/{n}", "photo_type": "full_body", "species": "A b",
                    "catalog_number": "", "needs_review": "False"} for n in names]
+        labels[4]["label_drop"] = "needs_review: a figure"
+        labels[1]["label_drop"] = "catalog conflict: A b"
         split_rows = {f"full_body/{names[0]}": {"specimen": "S00001", "split": "test", "genus_evaluated": "True"}}
         cache = {}
         rows = bm.build_rows(labels, tmp / "seg", split_rows, {"full_body": raw}, cache)
         got = [(r["status"], r["reason"], r["split"], r["specimen"], bool(r["mask_path"]), r["n_instances"])
                for r in rows]
         assert got == [("usable", "", "test", "S00001", True, 2),
-                       ("dropped", "after fallback: bleed", "none", "", False, ""),
+                       ("dropped", "catalog conflict: A b (mask dropped: after fallback: bleed)", "none", "",
+                        False, ""),
                        ("skipped", "no_detection", "none", "", False, ""),
-                       ("dropped", "no catalog number", "none", "", False, "")]
-        assert len({r["sha256"] for r in rows}) == 4 and len(cache) == 4
+                       ("dropped", "no catalog number", "none", "", False, ""),
+                       ("dropped", "needs_review: a figure", "none", "", False, "")]
+        assert len({r["sha256"] for r in rows}) == 5 and len(cache) == 5
         # the cache is used when size and mtime are unchanged
         cache[str(raw / names[0])][2] = "cached"
         assert bm.file_sha256(raw / names[0], cache) == "cached"

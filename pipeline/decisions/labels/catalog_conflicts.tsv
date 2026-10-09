@@ -1,0 +1,27 @@
+names (images)	catalogs	images	proposal	confidence	note	decision
+Abramocephalus microlepis (1) | Alestes adolfi (3)	1	4	keep	medium	unrelated fish under one number; catalog mix-up, names look right	keep
+Acanthodoras polygramma (4) | Coregonus schinzii zugensis (2)	1	6	keep	medium	unrelated fish under one number	keep
+Alburnoides eichwaldii (1) | Alburnus eichwaldii (2)	1	3	rename Alburnus eichwaldii -> Alburnoides eichwaldii	high	old genus name	rename Alburnus eichwaldii -> Alburnoides eichwaldii
+Alburnus mento (1) | Aspius aspius (reg.as Alburnus mento) (1)	1	2	rename Alburnus mento -> Aspius aspius	medium	file name says it is registered as A. mento but identified as Aspius aspius	rename in catalog Alburnus mento -> Aspius aspius
+Aphaniops hormuzensis (1) | Cyprinion dispar hormusensis (1)	1	2	rename Cyprinion dispar hormusensis -> Aphaniops hormuzensis	high	killifish; Cyprinion (a cyprinid) is a naming error	rename Cyprinion dispar hormusensis -> Aphaniops hormuzensis
+Barbus kersin (6) | Luciobarbus kersin (6)	3	12	rename Barbus kersin -> Luciobarbus kersin	high	old genus name	rename Barbus kersin -> Luciobarbus kersin
+Chela argentea (2) | Phoxinellus croaticus (2)	1	4	keep	medium	unrelated fish under one number	keep
+Cobitis marmorata (2) | Triplophysa marmorata (3)	1	5	rename Cobitis marmorata -> Triplophysa marmorata	high	old genus name	rename Cobitis marmorata -> Triplophysa marmorata
+Cobitis vittata (2) | Triplophysa marmorata (2)	1	4	drop Cobitis vittata	low	byte-identical to a Triplophysa marmorata image (duplicates.csv); one name is wrong	drop Cobitis vittata
+Coregonus danneri (30) | Salmo (1)	1	31	drop Salmo	medium	genus-only name in a Coregonus lot	drop Salmo
+Coregonus hiemalis (16) | Leuciscus arrigonis (8)	3	24	keep	medium	unrelated fish under three numbers	keep
+Corydoras marmoratus (1) | Fundulus micropus (1)	1	2	keep	medium	unrelated fish under one number	keep
+Crayacion cochinchinensis (6) | Tetraodon leiurus (1)	1	7	rename Crayacion cochinchinensis -> Tetraodon cochinchinensis	medium	Crayracion is an old synonym of Tetraodon; species question left open	rename Crayacion cochinchinensis -> Tetraodon cochinchinensis
+Curimatus ciliatus (2) | Psectrogaster ciliata (2)	1	4	rename Curimatus ciliatus -> Psectrogaster ciliata	high	same species, old genus	rename Curimatus ciliatus -> Psectrogaster ciliata
+Delminichthys adspersus (1) | Phoxinellus adspersus (1)	1	2	rename Phoxinellus adspersus -> Delminichthys adspersus	high	old genus name	rename Phoxinellus adspersus -> Delminichthys adspersus
+Delminichthys adspersus (5) | Phoxinellus scharfetteri (4)	2	9	keep	low	check: related minnows, may be one identification under two names	keep
+Gasteropelecus stellatus (9) | Leporinus muelleri (3)	1	12	keep	medium	unrelated fish (after the Gastropelecus spelling fix)	keep
+Gobio esocinus (3) | Pseudogobio esocinus (4)	1	7	rename Gobio esocinus -> Pseudogobio esocinus	high	old genus name	rename Gobio esocinus -> Pseudogobio esocinus
+Gobius batrachocephalus (1) | Mesogobius batrachocephalus (8)	1	9	rename Gobius batrachocephalus -> Mesogobius batrachocephalus	high	old genus name	rename Gobius batrachocephalus -> Mesogobius batrachocephalus
+Loricaria fallax (2) | Rineloricaria hasemani (5)	1	7	rename Loricaria fallax -> Rineloricaria fallax	medium	fallax is in Rineloricaria today; different species from hasemani	rename Loricaria fallax -> Rineloricaria fallax
+Non-Telestes (1) | Telestes croaticus (2)	1	3	drop Non-Telestes	high	file name says it is not a Telestes; identity unknown	drop Non-Telestes
+Paraphoxinus metohiensis (1) | Telestes miloradi (2)	1	3	keep	low	check: related minnows	keep
+Pygocentrus nattereri (2) | Serrasalmus striolatus (2)	2	4	keep	low	check: striolatus may be a synonym of P. nattereri	keep
+Rhina squatina (3) | Squatina oculata (2)	1	5	rename Rhina squatina -> Squatina squatina	medium	Rhina squatina = Linnaeus' name of the angelshark; different species from S. oculata, same genus after rename	rename Rhina squatina -> Squatina squatina
+Rutilus (from S plotizza) (1) | Scardinius plotizza (2)	1	3	keep	low	check: 'Rutilus (from S plotizza)' suggests a re-identification	keep
+Salar obtusirostris (3) | Salmo obtusirostris (1)	1	4	rename Salar obtusirostris -> Salmo obtusirostris	high	old genus name	rename Salar obtusirostris -> Salmo obtusirostris

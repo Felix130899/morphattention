@@ -32,13 +32,48 @@ Run inside the container, e.g.:
     docker compose run --rm vit-project python scripts/extract_labels.py \
         --raw-dir /workspace/data/raw/nmw_specimens \
         --out-csv /workspace/data/processed/labels.csv
+
+``--decisions DIR`` applies Neo's label decision sheets (tab-separated,
+tracked in ``pipeline/decisions/labels/``; no file names or catalog numbers in
+them) on top of the parse, in this order:
+
+  1. ``genus_spelling.tsv``: every row with decision "accept" respells that
+     genus in every species name (an empty decision = rejected, name kept)
+  2. ``catalog_conflicts.tsv``: per set of names sharing a catalog number,
+     "rename A -> B" renames species A to B everywhere (a synonym), "rename
+     in catalog A -> B" only in those catalogs (a re-identification), "drop
+     A" drops the images of species A in those catalogs only, "keep" changes
+     nothing.
+     The catalog sets are recomputed (after step 1, on the parsed catalog
+     number) and must match the sheet's catalog and image counts
+  3. ``needs_review.tsv``: per image (key: SHA-256 of its bytes), "set
+     catalog NMW<number>", "keep, own specimen group XYZ<number>" (another
+     museum's number, its own specimen group), or "drop"; ``<number>`` is
+     read from the file name
+  4. byte-identical images (same SHA-256): one copy is kept, the one whose
+     file name already carries its final species name, else the
+     alphabetically first; the others are dropped
+
+Two columns are added: ``label_change`` (what was changed) and
+``label_drop`` (why the image is not used; empty = used). Dropped rows stay
+in the CSV, so the row count still matches the image count.
+
+    python scripts/extract_labels.py --raw-dir data/raw/NHM_datensatz \\
+        --decisions pipeline/decisions/labels --out-csv data/processed/labels_final.csv
 """
 
 import argparse
+import csv
+import json
 import re
+import sys
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from split_specimens import file_sha256, genus_of  # noqa: E402
 
 # Pillow can decode all of these; segment_fish.py filters the same way.
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
@@ -133,6 +168,152 @@ def parse_filename(stem: str):
     }
 
 
+def read_sheet(path):
+    with open(path, newline="") as f:
+        return [{k: (v or "").strip() for k, v in r.items()} for r in csv.DictReader(f, delimiter="\t")]
+
+
+def respell(species, spelling):
+    """Species with its genus (first word) replaced via ``spelling`` {old: new}."""
+    genus = genus_of(species)
+    return spelling[genus] + species[len(genus):] if genus in spelling else species
+
+
+def conflict_names(cell):
+    """Species names of a catalog_conflicts.tsv "names (images)" cell, e.g.
+    "Rutilus (from S plotizza) (1) | Scardinius plotizza (2)" -> both names."""
+    return tuple(re.sub(r"\s*\(\d+\)$", "", part.strip()) for part in cell.split(" | "))
+
+
+# The number a needs_review decision's "<number>" stands for: the first run of
+# >= 4 digits after "_", optionally behind a (mistyped or foreign) museum
+# prefix, e.g. "_MNW12345", "_MW12345", "_12345_", "_NRM(Stockholm)12345".
+CATALOG_NUMBER_RE = re.compile(r"_(?:NMW|MNW|MW|NRM(?:\([^)]*\))?)?_?(\d{4,})")
+
+
+def apply_decisions(rows, decisions_dir, sha):
+    """Apply the three decision sheets + the duplicate rule to labels rows (dicts
+    as written by main(), species not None for parsed rows) in place. ``sha``:
+    {file_name: sha256}. Returns a Counter of what was done."""
+    done = Counter()
+    for r in rows:
+        r["label_change"], r["label_drop"] = [], ""
+
+    # 1. genus spellings
+    spelling = {}
+    for d in read_sheet(Path(decisions_dir) / "genus_spelling.tsv"):
+        if d["decision"] not in ("accept", ""):
+            raise SystemExit(f"genus_spelling.tsv: unknown decision {d['decision']!r} for {d['from_genus']}")
+        if d["decision"] == "accept":
+            spelling[d["from_genus"]] = d["to_genus"]
+    for r in rows:
+        if r["species"] and genus_of(r["species"]) in spelling:
+            old = genus_of(r["species"])
+            r["species"] = respell(r["species"], spelling)
+            r["label_change"].append(f"genus {old} -> {spelling[old]}")
+            done["genus_respelled"] += 1
+
+    # 2. catalog conflicts: recompute the sets of names per catalog number, as on the sheet
+    by_cat = defaultdict(list)
+    for r in rows:
+        if r["catalog_number"] and r["species"]:
+            by_cat[r["catalog_number"]].append(r)
+    sets = defaultdict(list)  # sorted names -> catalogs
+    for cat, rs in by_cat.items():
+        if len({genus_of(r["species"]) for r in rs}) > 1:
+            sets[tuple(sorted({r["species"] for r in rs}))].append(cat)
+    renames, drops, local_renames = {}, [], []
+    sheet = read_sheet(Path(decisions_dir) / "catalog_conflicts.tsv")
+    unmatched = set(sets) - {conflict_names(d["names (images)"]) for d in sheet}
+    if unmatched:
+        raise SystemExit(f"catalog conflicts not on the sheet: {sorted(unmatched)}")
+    for d in sheet:
+        names = conflict_names(d["names (images)"])
+        cats = sets.get(names, [])
+        n_img = sum(len(by_cat[c]) for c in cats)
+        if (len(cats), n_img) != (int(d["catalogs"]), int(d["images"])):
+            raise SystemExit(f"catalog_conflicts.tsv {names}: sheet says {d['catalogs']} catalogs / {d['images']} "
+                             f"images, labels give {len(cats)} / {n_img}")
+        m = re.fullmatch(r"rename (in catalog )?(.+) -> (.+)", d["decision"])
+        if m:
+            if m.group(2) not in names:
+                raise SystemExit(f"catalog_conflicts.tsv: rename of {m.group(2)!r}, not one of {names}")
+            if m.group(1):
+                local_renames.append((m.group(2), m.group(3), cats))
+            else:
+                renames[m.group(2)] = m.group(3)
+        elif d["decision"].startswith("drop "):
+            name = d["decision"][len("drop "):]
+            if name not in names:
+                raise SystemExit(f"catalog_conflicts.tsv: drop of {name!r}, not one of {names}")
+            drops.append((name, cats))
+        elif d["decision"] != "keep":
+            raise SystemExit(f"catalog_conflicts.tsv: unknown decision {d['decision']!r} for {names}")
+    for name, cats in drops:
+        for c in cats:
+            for r in by_cat[c]:
+                if r["species"] == name:
+                    r["label_drop"] = f"catalog conflict: {name} in a catalog of another genus"
+                    done["dropped_catalog_conflict"] += 1
+    for old, new, cats in local_renames:
+        for c in cats:
+            for r in by_cat[c]:
+                if r["species"] == old:
+                    r["species"] = new
+                    r["label_change"].append(f"rename in catalog {old} -> {new}")
+                    done["renamed"] += 1
+    for r in rows:
+        if r["species"] in renames:
+            r["label_change"].append(f"rename {r['species']} -> {renames[r['species']]}")
+            r["species"] = renames[r["species"]]
+            done["renamed"] += 1
+
+    # 3. needs_review rows, keyed by the image's SHA-256
+    by_sha = defaultdict(list)
+    for r in rows:
+        by_sha[sha[r["file_name"]]].append(r)
+    for d in read_sheet(Path(decisions_dir) / "needs_review.tsv"):
+        if len(by_sha.get(d["sha256"], [])) != 1:
+            raise SystemExit(f"needs_review.tsv: {len(by_sha.get(d['sha256'], []))} images with sha256 {d['sha256']}")
+        r = by_sha[d["sha256"]][0]
+        dec = d["decision"]
+        m = re.fullmatch(r"set catalog (NMW)<number>|keep, own specimen group ([A-Z]+)<number>", dec)
+        if m:
+            num = CATALOG_NUMBER_RE.search(Path(r["file_name"]).stem)
+            if not num:
+                raise SystemExit(f"needs_review.tsv: no catalog number in the file name of {d['sha256']}")
+            r["catalog_number"] = f"{m.group(1) or m.group(2)}{num.group(1)}"
+        elif dec == "drop":
+            r["label_drop"] = f"needs_review: {d['note']}"
+            done["dropped_needs_review"] += 1
+        else:
+            raise SystemExit(f"needs_review.tsv: unknown decision {dec!r}")
+        r["needs_review"], r["review_reason"] = False, f"resolved: {dec}"
+        r["label_change"].append(f"resolved: {dec}")
+        done["needs_review_resolved"] += 1
+
+    # 4. byte-identical copies: keep one per set
+    by_sha = defaultdict(list)
+    for r in rows:
+        if not r["label_drop"]:
+            by_sha[sha[r["file_name"]]].append(r)
+    for copies in by_sha.values():
+        if len(copies) < 2:
+            continue
+        done["duplicate_sets"] += 1
+        done["duplicate_sets_genus_differs"] += len({genus_of(r["species"]) for r in copies}) > 1
+        named = [r for r in copies if r["species_raw"] and r["species_raw"].replace("_", " ").strip() == r["species"]]
+        keep = min(named or copies, key=lambda r: r["file_name"])
+        for r in copies:
+            if r is not keep:
+                r["label_drop"] = "byte-identical copy of an image kept under another file name"
+                done["dropped_duplicate"] += 1
+
+    for r in rows:
+        r["label_change"] = "; ".join(r["label_change"])
+    return done
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--raw-dir", type=Path, default=None,
@@ -140,11 +321,18 @@ def main():
                              "If not provided, you'll be prompted to choose from available datasets.")
     parser.add_argument("--out-csv", type=Path, default="/workspace/data/processed/labels.csv",
                         help="Where to write the labels CSV.")
+    parser.add_argument("--decisions", type=Path, default=None,
+                        help="Folder with the label decision sheets (genus_spelling.tsv, "
+                             "catalog_conflicts.tsv, needs_review.tsv) to apply.")
+    parser.add_argument("--hash-cache", type=Path, default=Path("data/processed/sha256_cache.json"),
+                        help="SHA-256 cache shared with split_specimens.py (used with --decisions).")
     args = parser.parse_args()
 
     if args.raw_dir is None:
         default_raw = Path("/workspace/data/raw")
         args.raw_dir = choose_directory(default_raw)
+    # absolute, so the hash cache keys match split_specimens.py's
+    args.raw_dir = args.raw_dir.resolve()
 
     images = list(iter_images(args.raw_dir))
     print(f"Found {len(images)} image(s) under {args.raw_dir}")
@@ -166,10 +354,25 @@ def main():
             **parsed,
         })
 
-    df = pd.DataFrame(rows, columns=[
-        "file_name", "photo_type", "species", "species_raw", "catalog_number",
-        "extra", "needs_review", "review_reason",
-    ])
+    columns = ["file_name", "photo_type", "species", "species_raw", "catalog_number",
+               "extra", "needs_review", "review_reason"]
+    if args.decisions is not None:
+        cache = json.loads(args.hash_cache.read_text()) if args.hash_cache.exists() else {}
+        n_cached = len(cache)
+        try:
+            sha = {str(p.relative_to(args.raw_dir)): file_sha256(p, cache) for p in images}
+        finally:
+            if len(cache) != n_cached:
+                args.hash_cache.parent.mkdir(parents=True, exist_ok=True)
+                args.hash_cache.write_text(json.dumps(cache))
+        done = apply_decisions(rows, args.decisions, sha)
+        columns += ["label_change", "label_drop"]
+        print(f"Applied the decisions in {args.decisions} ({len(cache) - n_cached} images newly hashed):")
+        for key in ("genus_respelled", "renamed", "needs_review_resolved", "dropped_catalog_conflict",
+                    "dropped_needs_review", "duplicate_sets", "duplicate_sets_genus_differs", "dropped_duplicate"):
+            print(f"  {key}: {done[key]}")
+
+    df = pd.DataFrame(rows, columns=columns)
 
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.out_csv, index=False)

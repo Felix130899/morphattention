@@ -21,9 +21,13 @@ exported under an old and a new species name) are merged too, even when
 their numbers differ, so a copy can never land in another split. One NMW number is a lot (jar) that can hold several fish;
 the whole lot stays in one split.
 
-Only usable images count: status "ok" in the run's annotations.jsonl.
-Images without a catalog number can't be assigned to a specimen and are
-dropped (listed in dropped_no_catalog.txt).
+Only usable images count: status "ok" in the run's annotations.jsonl and no
+``label_drop`` in the labels (extract_labels.py --decisions). When the file
+name has no "_NMW" number, the labels' ``catalog_number`` is used if a label
+decision set one (e.g. "NMW12345" for a "_MW12345" typo, or "NRM12345" for a
+specimen of another museum, which gets its own group). Images without any
+catalog number can't be assigned to a specimen and are dropped (listed in
+dropped_no_catalog.txt).
 
 Classes are genera (the word before any "(Subgenus)" in the species). A genus
 is *evaluated* in a domain if it has at least ``--min-specimens`` specimen
@@ -103,6 +107,19 @@ def catalog_numbers(file_name):
             break
         prev = num
     return numbers, odd
+
+
+def catalog_keys(row):
+    """Catalog numbers of a labels row as {(museum, number)}: from the file name
+    (always "NMW"), else from a ``catalog_number`` like "NMW12345" / "NRM12345"
+    that a label decision set. Empty if neither."""
+    nums, odd = catalog_numbers(row["file_name"])
+    if nums:
+        return {("NMW", n) for n in nums}, odd
+    m = re.fullmatch(r"([A-Z]+)(\d+)", row.get("catalog_number") or "")
+    if m:
+        return {("NMW" if m.group(1) == "MNW" else m.group(1), int(m.group(2)))}, []
+    return set(), []
 
 
 def genus_of(species):
@@ -260,10 +277,10 @@ def main():
         raise SystemExit(f"{len(missing)} labels.csv rows have no record in {args.segmented}, "
                          f"e.g. {missing[:2]}")
 
-    usable = [r for r in labels if status[r["file_name"]][0] == "ok"]
+    usable = [r for r in labels if status[r["file_name"]][0] == "ok" and not r.get("label_drop")]
     numbers, odd_tails, no_catalog = {}, 0, []
     for r in usable:
-        nums, odd = catalog_numbers(r["file_name"])
+        nums, odd = catalog_keys(r)
         odd_tails += bool(odd)
         if nums:
             numbers[r["file_name"]] = nums
@@ -287,9 +304,8 @@ def main():
 
     # The same, counting the images the mask review dropped as if they were usable:
     # which genera lost their evaluated status through the drops?
-    dropped_rows = [r for r in labels if status[r["file_name"]][0] == "dropped"]
-    with_drops = {**numbers, **{r["file_name"]: catalog_numbers(r["file_name"])[0] for r in dropped_rows
-                                if catalog_numbers(r["file_name"])[0]}}
+    dropped_rows = [r for r in labels if status[r["file_name"]][0] == "dropped" and not r.get("label_drop")]
+    with_drops = {**numbers, **{r["file_name"]: catalog_keys(r)[0] for r in dropped_rows if catalog_keys(r)[0]}}
     spec_d = build_groups(with_drops, same_bytes)
     mem_d = collections.defaultdict(list)
     for r in rows + [r for r in dropped_rows if r["file_name"] in with_drops]:
@@ -312,7 +328,7 @@ def main():
         for sid in sorted(members):
             nums = sorted(set().union(*(numbers[r["file_name"]] for r in members[sid])))
             per_d = collections.Counter(r["photo_type"] for r in members[sid])
-            w.writerow([sid, ";".join(f"NMW{x}" for x in nums), groups[sid]["genus"],
+            w.writerow([sid, ";".join(f"{museum}{x}" for museum, x in nums), groups[sid]["genus"],
                         *[per_d[d] for d in domains], split[sid]])
     (args.out / "dropped_no_catalog.txt").write_text("".join(n + "\n" for n in no_catalog))
     species_of = {r["file_name"]: r["species"] for r in rows}
@@ -350,7 +366,8 @@ def main():
                       "images": dict(img), "images_of_evaluated_genera": dict(ev), "specimens": dict(spec),
                       "lost_evaluation_through_drops": sorted(evaluated_d[d] - evaluated[d])}
     label_genus_differs = sum(genus_of(r["species"]) != groups[specimen[r["file_name"]]]["genus"] for r in rows)
-    counts = {"labels_rows": len(labels), "usable": len(usable), "no_catalog_dropped": len(no_catalog),
+    counts = {"labels_rows": len(labels), "label_dropped": sum(bool(r.get("label_drop")) for r in labels),
+              "usable": len(usable), "no_catalog_dropped": len(no_catalog),
               "catalog_numbers": len(set().union(*numbers.values())),
               "specimen_groups": len(groups), "images_with_ignored_dash_tail": odd_tails,
               "rows_whose_genus_differs_from_their_group": label_genus_differs,
