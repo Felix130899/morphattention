@@ -1,0 +1,41 @@
+# Images dropped after the mask reviews of 2026-10-01..03 (first review + bleed-fallback compare),
+# applied to setting D's full run. Key: SHA-256 of the raw image file. See vault decisions/full-run-setting-D.
+sha256	reason
+002d1d4ba47fbb2e0355bcc5549e2a47cc281f9ccf4dc1501a63022376d22ba7	fallback did not change it; first review: bleed;wrong_object
+0d7ffd70e4c720bdc2e2e5dee30bf9e243b739edf7eb171dbd1d3e55acee90b7	fallback did not change it; first review: bleed
+13d0d2ad1ca43b1dd308ddc1a2f41a976086715466e0a41ae9e361ef9668320d	fallback did not change it; first review: bleed
+179bb5932778b98ea59dda8383f3f2d64e262138f90641da88296535c2381b6f	fallback did not change it; first review: bleed;wrong_object
+271e0503f9001b3dfee4e85582a128472f1b6eb972fd36dd4f0017c7d823f27d	after fallback: fin_cut,bleed
+3f37ddcd72db5fed1f01dd3928905ffcc5caec6597385aff77cc8c9c3a5e05a3	fallback did not change it; first review: bleed
+44c975edf52d7a2c00d4c0e71a6e7310b140848a39d8a8b46a46566d76c91b71	fallback did not change it; first review: bleed
+4538f95fb8087ae9030e07b2be410c961c7025ce068d74207eaa5247593b6711	after fallback: bleed
+4669ea9f18ab7ec32a4e64aa70295b7b8e0df96b756eb2ccc49d93b1747b9d14	fallback did not change it; first review: merged;wrong_object
+4c17c3b67b52c37e27c871c986cacc0af853d36bdadb39c991be9f1e4ece5a5c	fallback did not change it; first review: bleed
+58dbfd4c77cdc0a8ba6830de957dfb42eaa4ee1011b186289715137f6e6978ca	after fallback: bleed
+5a3960255371f19e6f331b875b2adc31317be97ab3b076b1275134659b25eaf8	fallback did not change it; first review: merged;wrong_object
+5afb61879b739730026197a24c94027b0336441da33ccd761c69425fbcf73256	fallback did not change it; first review: wrong_object
+5ff085782bdc7df83f063f15fe035f99259df405d14f9f75857706c452323630	fallback did not change it; first review: missed_fish
+6c9c4c4ed9e37ff023a199a9653e1c8860a452e2d0672fc38ad51d833b3b81b3	fallback did not change it; first review: missed_fish
+6d7879e1ee9e3ec38127208338050b92d2fbe12f01b43c34bc845c8908eb60de	fallback did not change it; first review: bleed
+740469e89316a8beb7ee179d059df7d551ead141ee7c8f818b0d9c2cc22ef11d	after fallback: merged
+749fd10a8685bd3db0cf87bc81f53cef2d6fcc37083cf9eed0d440e421cd0da4	after fallback: fin_cut
+763e2ad2f12973488daa8999c1836f036b70b90907adb4a2eef05b7d60e86830	after fallback: fin_cut
+841cf1cff95786bdd54f56c9f863e98f89417d42d920b1aecce1d34e007ce4fb	after fallback: fin_cut
+87e357d6c4a8fb3ecb2591e4b541087f673e96247a2d3a4d099a0e329c0cdb48	fallback did not change it; first review: missed_fish
+8ecd6ac66b2378d1ee9a7a4969eaf2230175e6039afc5bbb50a7e6485fd9d355	after fallback: bleed
+90e48806b5a7cbcce726a0b9cf756d2b4a65d0cbaab05b17174bfb44c1d9079a	fallback did not change it; first review: bleed;wrong_object
+9a59299d310549859911a948d34d19f87bbcb6864f16afbe349fe076eccad5f1	after fallback: bleed,wrong_object
+9c863de84e0e92079e74fd96e22c6ca6687aca4e413b4600510a4e32da345c5c	after fallback: bleed
+9edbfb2bf68cf819821c2e7ba92903fdd43d8c0c0e1fcdefa3b6441c24a5d2ad	fallback did not change it; first review: bleed
+a489958fc6aac2cc3ad8d4092c06a543de03b0176c6687688d12f8cb58026f1f	after fallback: wrong_object
+af52f2054143480e4f1eb9a6b7be10345532f816fd8ffd22e2a0d0339c5918c0	after fallback: bleed
+bfda040864fdd6d1b29619dab846b14ad0d3acdc593b90aaa282f36f1fb640bc	fallback did not change it; first review: merged
+c9cf7212f1e26385fcd6f25ee6f55d79eaddc0d0dc00e9dbda75c9dcda741261	after fallback: bleed
+cf12b4bd57b09ad64c8a832765a157dd475644765c2c5422f32685d15b82bc8d	fallback did not change it; first review: bleed
+daf808c21a6c8f42e6230c99899e394beeb3433cd44edaa1f8b59519090120e0	fallback did not change it; first review: merged
+e4eb92b7c38066b2b6edcce1135f7441e98287a47ea695160d45fbe44637a973	after fallback: bleed
+f2c4e4fc3aa0e23d9e538b65e6edfb6a5668c8eef31dd78257f39ff3b372406f	fallback did not change it; first review: wrong_object
+f5df849d4aeae3d0d1528b3f7b0a9767f4851c152838bbac785c6d5b0067831d	after fallback: bleed,wrong_object
+f61fad604c2683f097c6212d733e043223e58cd3b56767aed80246673607d03f	fallback did not change it; first review: merged;wrong_object
+fc1c2213c6a313aecd5db68488c18b747a946ed51a3a14d77d916366f08aba9c	after fallback: bleed
+fc4f6e1361be0e7076afa5bdb0fce0bd9a185b1f1e5d73c83ef493a30a246b5d	fallback did not change it; first review: bleed

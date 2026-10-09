@@ -147,8 +147,50 @@ def test_cli_drop_only_mode_needs_no_patch():
             assert r.returncode != 0 and not (d / "out2").exists(), extra
 
 
+def test_qa_rule_b():
+    def inst(**kw):
+        return {"outside_box_frac": 0.0, "bleed_fallback": "none", "edge_uncertain_frac": 0.1, **kw}
+    ok = {"status": "ok", "instances": [inst(), inst()]}
+    assert mr.qa_rule_b(ok) is None
+    assert mr.qa_rule_b({"status": "ok", "instances": [inst(), inst(outside_box_frac=0.03)]}) == "qa_rule_B: outside_box"
+    assert mr.qa_rule_b({"status": "ok", "instances": [inst(bleed_fallback="inverse", edge_uncertain_frac=0.6)]}) == (
+        "qa_rule_B: edge_uncertain,inverse")
+    assert mr.qa_rule_b({"status": "ok", "instances": [inst(bleed_fallback="unresolved")]}) == "qa_rule_B: unresolved"
+    assert mr.qa_rule_b({"status": "ok", "instances": [inst(bleed_fallback="candidate", outside_box_frac=0.02)]}) is None
+    assert mr.qa_rule_b({"status": "dropped", "reason": "x"}) is None
+
+
+def test_cli_drop_sha_and_qa_rule():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        flagged = rec("c.jpg", "base")
+        flagged["instances"][0]["bleed_fallback"] = "inverse"
+        both = rec("b.jpg", "base")
+        both["instances"][0]["edge_uncertain_frac"] = 0.9
+        base = fake_run(d / "base", [rec("a.jpg", "base"), both, flagged])
+        raw = d / "raw"
+        raw.mkdir()
+        for k, n in enumerate(["a.jpg", "b.jpg", "c.jpg"]):
+            (raw / n).write_bytes(bytes([k]))
+        (base / "run_config.json").write_text(json.dumps({"settings": {"raw_dir": str(raw)}, "sessions": []}))
+        sha_b = mr.file_sha256(raw / "b.jpg", {})
+        (d / "drops.tsv").write_text(f"# reviewed\nsha256\treason\n{sha_b}\tfirst review: bleed\n")
+        subprocess.run([sys.executable, str(SCRIPT), "--base", str(base), "--drop-sha", str(d / "drops.tsv"),
+                        "--qa-rule", "B", "--hash-cache", str(d / "cache.json"), "--out", str(d / "out")],
+                       check=True, capture_output=True)
+        # the list's reason wins over the rule for b; c is dropped by the rule alone
+        assert (d / "out" / "dropped.txt").read_text() == "b.jpg\tfirst review: bleed\nc.jpg\tqa_rule_B: inverse\n"
+        cfg = json.loads((d / "out" / "run_config.json").read_text())["merged"]
+        assert (cfg["n_drop_sha"], cfg["n_qa_rule_dropped"], cfg["n_dropped"]) == (1, 1, 2)
+        # a sha256 that matches no image is refused
+        (d / "bad.tsv").write_text("sha256\treason\n" + "0" * 64 + "\tx\n")
+        r = subprocess.run([sys.executable, str(SCRIPT), "--base", str(base), "--drop-sha", str(d / "bad.tsv"),
+                            "--hash-cache", str(d / "cache.json"), "--out", str(d / "out3")], capture_output=True)
+        assert r.returncode != 0 and not (d / "out3").exists()
+
+
 if __name__ == "__main__":
-    tests = [(name, fn) for name, fn in list(globals().items()) if name.startswith("test_")]
+    tests =[(name, fn) for name, fn in list(globals().items()) if name.startswith("test_")]
     for name, fn in tests:
         fn()
         print(f"  ok  {name}")

@@ -1,0 +1,9 @@
+# source: data/processed/segmented/review_compare_BE_Röntgen_seed2/D_unknown_review
+# mode: single
+# judged: 4
+# raw_file_missing: 0
+position	sha256	verdict	categories
+	32685330172848fe19fe88a360d0f1ab9086365152422611363d204402ea3950	ok	
+	5ec83bcc2eb9ec94e15b399771974f344c78dc50008a30becb5da5386ce02a56	fix	bleed
+	87a3a728cb46c28d8fcc31dee3f32a17bfde3ca647cf0901892be097701a513c	ok	
+	8d77d53092f7efeae1f92fa85ef5c7abd3d270f3a844b981ba5d00ae2f8e49b3	fix	fin_cut

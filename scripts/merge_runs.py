@@ -19,6 +19,17 @@ line as ``file_name<TAB>reason``. Their record becomes
 overlay in ``--out`` (the base run still has them), listed in dropped.txt.
 A name can't be both taken and dropped.
 
+``--drop-sha FILE`` (optional): the same, keyed by image content instead of
+name (``sha256<TAB>reason`` lines after a ``sha256<TAB>reason`` header; the
+tracked form in ``pipeline/decisions/``). The base run's raw images are
+hashed (cached in ``--hash-cache``) to find them.
+
+``--qa-rule B`` (optional): also drop every "ok" image with any instance
+> 2 % outside its detector box, an inverted or unresolved bleed fallback, or
+edge_uncertain_frac > 0.5 (X-rays; vault decisions/2026-10-08-xray-drop-rule-B).
+Reason ``qa_rule_B: <which conditions>``. Images already dropped by a list
+keep the list's reason.
+
 Drop-only mode: ``--base`` + ``--drop`` without ``--patch`` writes the base
 run minus the dropped images (e.g. to apply an earlier run's drops to a fresh
 full run, so the numbers stay comparable).
@@ -40,6 +51,11 @@ Output (same layout as segment_fish.py, so review_masks.py etc. work on it):
         --base data/processed/segmented/D_full_2026-10-05/full_body \\
         --drop data/processed/segmented/B_merged_2026-10-03/full_body/dropped.txt \\
         --out data/processed/segmented/D_merged_2026-10-05/full_body
+
+    python scripts/merge_runs.py \\
+        --base data/processed/segmented/D_full_2026-10-05/Röntgen \\
+        --drop-sha pipeline/decisions/mask_drops_Röntgen.tsv --qa-rule B \\
+        --out data/processed/segmented/D_final/Röntgen
 """
 
 import argparse
@@ -54,6 +70,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from review_masks import load_decisions  # noqa: E402
 from segment_fish import git_state, parse_image_list, print_summary, write_outputs  # noqa: E402
+from split_specimens import file_sha256, resolve  # noqa: E402
+
+QA_RULES = ("B",)
 
 
 def read_records(run_dir):
@@ -110,6 +129,41 @@ def read_drop_list(text):
     return drops
 
 
+def read_sha_drop_list(text):
+    """{sha256: reason} from a ``sha256<TAB>reason`` table (``#`` comment lines,
+    the header line and blank lines ignored)."""
+    drops = {}
+    for line in text.splitlines():
+        if not line.strip() or line.startswith("#") or line.startswith("sha256\t"):
+            continue
+        sha, _, reason = line.partition("\t")
+        drops[sha.strip()] = reason.strip() or "dropped"
+    return drops
+
+
+def names_by_sha(records, raw_dir, cache):
+    """{sha256: [file_name, ...]} of a run's records, hashing the raw images."""
+    out = {}
+    for name in records:
+        out.setdefault(file_sha256(Path(raw_dir) / name, cache), []).append(name)
+    return out
+
+
+def qa_rule_b(rec):
+    """Rule B's reason for an "ok" record, or None if no instance trips it."""
+    if rec["status"] != "ok":
+        return None
+    why = set()
+    for inst in rec["instances"]:
+        if (inst.get("outside_box_frac") or 0) > 0.02:
+            why.add("outside_box")
+        if inst.get("bleed_fallback") in ("inverse", "unresolved"):
+            why.add(inst["bleed_fallback"])
+        if inst.get("edge_uncertain_frac", 0) > 0.5:
+            why.add("edge_uncertain")
+    return "qa_rule_B: " + ",".join(sorted(why)) if why else None
+
+
 def apply_drops(merged, drops, take):
     """Mark every dropped image's record as dropped. Fails on unknown names or
     names that are also taken from the patch."""
@@ -136,13 +190,16 @@ def main():
     parser.add_argument("--take-ok-from", metavar="REVIEW_DIR:RUN",
                         help="take every image judged ok for RUN in this compare-mode review dir")
     parser.add_argument("--drop", type=Path, help="file_name<TAB>reason lines: exclude these images")
+    parser.add_argument("--drop-sha", type=Path, help="sha256<TAB>reason table: exclude these images")
+    parser.add_argument("--qa-rule", choices=QA_RULES, help="also drop the images this QA rule flags")
+    parser.add_argument("--hash-cache", type=Path, default=Path("data/processed/sha256_cache.json"))
     parser.add_argument("--out", type=Path, required=True, help="new run dir (must not exist)")
     args = parser.parse_args()
     if args.patch is None:
         if args.take is not None or args.take_ok_from is not None:
             parser.error("--take/--take-ok-from need --patch")
-        if args.drop is None:
-            parser.error("give --patch (with --take and/or --take-ok-from) and/or --drop")
+        if args.drop is None and args.drop_sha is None and args.qa_rule is None:
+            parser.error("give --patch (with --take and/or --take-ok-from) and/or --drop / --drop-sha / --qa-rule")
     elif args.take is None and args.take_ok_from is None:
         parser.error("give --take and/or --take-ok-from")
     if args.out.exists():
@@ -160,6 +217,32 @@ def main():
     patch = read_records(args.patch) if args.patch is not None else {}
     merged = merge_records(base, patch, take)
     drops = read_drop_list(args.drop.read_text()) if args.drop is not None else {}
+    n_sha_drops = 0
+    if args.drop_sha is not None:
+        raw_dir = resolve(json.loads((args.base / "run_config.json").read_text())["settings"]["raw_dir"])
+        cache = json.loads(args.hash_cache.read_text()) if args.hash_cache.exists() else {}
+        n_cached = len(cache)
+        try:
+            by_sha = names_by_sha(base, raw_dir, cache)
+        finally:
+            if len(cache) != n_cached:
+                args.hash_cache.write_text(json.dumps(cache))
+        sha_drops = read_sha_drop_list(args.drop_sha.read_text())
+        missing = [s for s in sha_drops if s not in by_sha]
+        if missing:
+            raise SystemExit(f"{len(missing)} sha256 value(s) of {args.drop_sha} match no image of {args.base}")
+        for s, reason in sha_drops.items():
+            for name in by_sha[s]:
+                drops.setdefault(name, reason)
+        n_sha_drops = len(sha_drops)
+    n_rule_drops = 0
+    if args.qa_rule == "B":
+        taken = set(take)
+        for name, rec in merged.items():
+            reason = qa_rule_b(rec) if name not in drops and name not in taken else None
+            if reason:
+                drops[name] = reason
+                n_rule_drops += 1
     merged = apply_drops(merged, drops, take)
 
     for d in ("masks", "overlays", "coco"):
@@ -182,7 +265,11 @@ def main():
             "base": str(args.base), "patch": str(args.patch) if args.patch else None,
             "take": str(args.take) if args.take else None, "take_ok_from": args.take_ok_from,
             "n_taken": len(take), "taken_sha256": hashlib.sha256("\n".join(take).encode()).hexdigest(),
-            "drop": str(args.drop) if args.drop else None, "n_dropped": len(drops),
+            "drop": str(args.drop) if args.drop else None,
+            "drop_sha": str(args.drop_sha) if args.drop_sha else None,
+            "drop_sha_sha256": hashlib.sha256(args.drop_sha.read_bytes()).hexdigest() if args.drop_sha else None,
+            "n_drop_sha": n_sha_drops, "qa_rule": args.qa_rule, "n_qa_rule_dropped": n_rule_drops,
+            "n_dropped": len(drops),
         },
         "base_config": json.loads((args.base / "run_config.json").read_text()),
         "patch_config": json.loads((args.patch / "run_config.json").read_text()) if args.patch else None,
