@@ -18,14 +18,17 @@ under ``<out-dir>/<raw-dir name>/``:
 Design and the reasoning behind every rule below:
 vault/thesis-log/decisions/2026-09-24-per-instance-mask-output.md
 
-Prompting strategy (``--prompt``):
-  * ``center`` (default) - a single point at the image centre. Only fits
-    photos with exactly one, roughly centred fish.
-  * ``yolo``  - YOLO detector boxes as SAM box prompts. NOTE: stock
-    yolov8*.pt is trained on COCO and has NO fish class; pass a fish-trained
-    checkpoint via ``--yolo-weights`` for meaningful results.
-  * ``dino``  - Grounding DINO zero-shot boxes for a text prompt (default
-    "fish.") as SAM box prompts. Slow and heavy, but no training needed.
+Prompts: Grounding DINO zero-shot boxes for a text prompt (default "fish.")
+as SAM box prompts. (A centre-point mode and a YOLO mode existed until
+2026-10-09; neither was used after stage 0, see
+vault/thesis-log/experiments/mask-quality-history.md.)
+
+**Defaults = the thesis setting D** (vault/thesis-log/experiments/
+2026-10-04-random-review-fixes.md): mask threshold -1, specks < 1 % dropped,
+bleed fallback at 2 % outside the box, wrong-region fix on, far pieces and
+small holes at 0.02. One setting differs per domain: ``--bleed-max-box-edge``
+0.1 for photos (default), 0.3 for X-rays. ``scripts/run_part1.py`` passes it
+from ``pipeline/config.yaml``.
 
 Per image: detect -> SAM (3 candidates per prompt; threshold the mask logits
 at ``--mask-threshold``; keep one candidate per ``--candidate``) -> drop empty
@@ -37,15 +40,14 @@ flag and a starting guess, to be tuned per domain (photo vs. X-ray) on real
 overlays - none of the defaults comes from the data.
 
 Fin recovery (SAM tends to cut off fins; see
-vault/thesis-log/decisions/2026-10-01-mask-policy.md). All three default to
-the original behaviour, so a run with defaults reproduces the old masks:
+vault/thesis-log/decisions/2026-10-01-mask-policy.md):
   * ``--candidate`` ``score`` (default: highest predicted IoU) or
     ``largest`` (largest candidate area after thresholding).
-  * ``--mask-threshold`` (default 0.0 = SAM's own cut) applied to the mask
-    logits at working resolution; lower (e.g. -2) keeps translucent fins.
+  * ``--mask-threshold`` (default -1; 0.0 = SAM's own cut) applied to the
+    mask logits at working resolution; lower keeps more translucent fin.
   * ``--margin-frac`` (default 0 = off) grows every final instance by
     r = max(1, round(margin_frac * sqrt(area))) px, never into another fish.
-  * ``--min-component-frac`` (default 0 = off) drops connected pieces of an
+  * ``--min-component-frac`` (default 0.01) drops connected pieces of an
     instance smaller than this fraction of it (low thresholds leave specks;
     the largest piece always stays).
 
@@ -55,7 +57,7 @@ inputs for the mask-QA model: ``sam_candidate_areas``,
 see ``edge_uncertain_frac()``), ``touches_border``, ``n_components``,
 ``margin_px``. Areas and ``margin_px`` are in working-resolution pixels.
 
-Bleed fallback (``--bleed-outside-frac``, default 0 = off): SAM sometimes
+Bleed fallback (``--bleed-outside-frac``, default 0.02; 0 = off): SAM sometimes
 picks a candidate that fills the whole background, printed names included.
 Such a mask spills out of its detector box; when it does, a SAM candidate
 that stays inside the box is used instead, or the inverse of a background
@@ -63,7 +65,7 @@ candidate. Instances record ``bleed_fallback`` (none / candidate / inverse /
 unresolved), ``sam_outside_box_frac`` and ``outside_box_frac``; flags
 ``bleed_fixed`` / ``bleed_unresolved``. See ``bleed_fallback()``.
 
-Wrong-region fix (``--wrong-region-fix``, default off): inside a box that
+Wrong-region fix (``--wrong-region-fix``, default on): inside a box that
 spans the whole image a mask of the background around the fish, or of the
 corners of an X-ray canvas, never spills out of the box. It leaves the middle
 of the box empty and runs along the box outline instead (``is_wrong_region()``);
@@ -73,7 +75,7 @@ region. Instances record ``wrong_region`` (none / reprompt / unresolved),
 ``wrong_region_unresolved``; a spurious detection without a fish is dropped
 (image flag ``wrong_region_dropped``). See ``wrong_region_fix()``.
 
-Clean-up (defaults off): ``--keep-near-frac`` drops small pieces far from the
+Clean-up (both default 0.02): ``--keep-near-frac`` drops small pieces far from the
 fish (printed names, rulers, background blobs, the line SAM leaves along an
 image edge; ``far_pieces_dropped``), ``--fill-holes-frac`` fills small holes
 (speckled fins, X-ray grids; ``holes_filled_px``). Numbers behind all three:
@@ -97,13 +99,13 @@ thresholds.
 Run inside the container, e.g.:
 
     docker compose run --rm vit-project python scripts/segment_fish.py \
-        --raw-dir /workspace/data/raw/NHM_datensatz/full_body --prompt dino
+        --raw-dir /workspace/data/raw/NHM_datensatz/full_body
     docker compose run --rm vit-project python scripts/segment_fish.py \
-        --raw-dir /workspace/data/raw/NHM_datensatz/full_body --prompt dino --resume
+        --raw-dir /workspace/data/raw/NHM_datensatz/Röntgen --bleed-max-box-edge 0.3 --resume
     docker compose run --rm vit-project python scripts/segment_fish.py \
-        --raw-dir /workspace/data/raw/NHM_datensatz/full_body --prompt dino \
-        --image-list dev_set.txt --candidate largest --mask-threshold -2 --margin-frac 0.03 \
-        --out-dir /workspace/data/processed/segmented/fin_largest_t-2_m0.03
+        --raw-dir /workspace/data/raw/NHM_datensatz/full_body \
+        --image-list dev_set.txt --mask-threshold -2 --margin-frac 0.03 \
+        --out-dir /workspace/data/processed/segmented/dev_t-2_m0.03
 """
 
 import argparse
@@ -846,7 +848,7 @@ def save_overlay(image, masks, labels, dropped_boxes, out_path):
     out.save(out_path, quality=90)
 
 
-def segment_image(image, prompt, sam, detector, args):
+def segment_image(image, sam, detector, args):
     """Run detection + SAM + the per-instance rules on one working-size image.
 
     Returns (record fields, final masks, labels, dropped boxes) or a skip
@@ -854,24 +856,19 @@ def segment_image(image, prompt, sam, detector, args):
     """
     model, processor = sam
     w, h = image.size
-    if prompt == "center":
-        boxes = scores = None
-        logits, iou = sam_logits(model, processor, image, input_points=[[[w / 2, h / 2]]])
-    else:
-        boxes, scores = detector(image)
-        if len(boxes) == 0:
-            return "no_detection"
-        logits, iou = sam_logits(model, processor, image, input_boxes=[boxes.tolist()])
+    boxes, scores = detector(image)
+    if len(boxes) == 0:
+        return "no_detection"
+    logits, iou = sam_logits(model, processor, image, input_boxes=[boxes.tolist()])
     masks, chosen, cand_areas = choose_candidates(logits, iou, args.mask_threshold, args.candidate)
     n_detections = len(masks)
     # Edge feature threshold per instance: an inverted candidate is "in" where
     # its negated logits are >= -threshold (see bleed_fallback()).
     edge_thr = np.full(n_detections, args.mask_threshold)
     bleed_source = np.array(["none"] * n_detections, dtype=object)
-    chosen_outside = np.array([box_fit(m, b)[0] for m, b in zip(masks, boxes)] if boxes is not None
-                              else [0.0] * n_detections)
+    chosen_outside = np.array([box_fit(m, b)[0] for m, b in zip(masks, boxes)])
     inverted = np.zeros(n_detections, dtype=bool)
-    if boxes is not None and args.bleed_outside_frac > 0:
+    if args.bleed_outside_frac > 0:
         for k in range(n_detections):
             masks[k], bleed_source[k], chosen[k], inverted[k] = bleed_fallback(
                 logits[k] > args.mask_threshold, chosen[k], boxes[k], args)
@@ -882,7 +879,7 @@ def segment_image(image, prompt, sam, detector, args):
     del logits
 
     wrong_source = np.array(["none"] * n_detections, dtype=object)
-    if boxes is not None and args.wrong_region_fix:
+    if args.wrong_region_fix:
         areas = masks.reshape(n_detections, -1).sum(axis=1)
         for k in range(n_detections):
             if not is_wrong_region(masks[k], boxes[k]):
@@ -926,8 +923,7 @@ def segment_image(image, prompt, sam, detector, args):
         edge_thr, bleed_source, chosen_outside = edge_thr[idx], bleed_source[idx], chosen_outside[idx]
         wrong_source, fin_source, fin_growth = wrong_source[idx], fin_source[idx], fin_growth[idx]
         fin_border = fin_border[idx]
-        boxes = boxes[idx] if boxes is not None else None
-        scores = scores[idx] if scores is not None else None
+        boxes, scores = boxes[idx], scores[idx]
 
     img_area = float(w * h)
     keep(np.nonzero(masks.reshape(len(masks), -1).sum(axis=1) > 0)[0])
@@ -935,8 +931,7 @@ def segment_image(image, prompt, sam, detector, args):
 
     giant = masks.reshape(len(masks), -1).sum(axis=1) / img_area > args.giant_area_frac
     kept, dropped = remove_duplicates(masks, boxes, scores, giant, args.dedup_containment)
-    dropped_info = [(boxes[i] if boxes is not None else None,
-                     float(scores[i]) if scores is not None else None, j) for i, j in dropped]
+    dropped_info = [(boxes[i], float(scores[i]), j) for i, j in dropped]
     keep(np.array(kept, dtype=int))
 
     masks, contested = resolve_overlaps(masks, boxes, scores)
@@ -1086,7 +1081,7 @@ def run_settings(args, image_names=None):
     blank lines and line order don't count).
     """
     settings = {
-        "raw_dir": str(args.raw_dir), "prompt": args.prompt, "sam_checkpoint": SAM_CHECKPOINT,
+        "raw_dir": str(args.raw_dir), "prompt": "dino", "sam_checkpoint": SAM_CHECKPOINT,
         "max_side": args.max_side, "dedup_containment": args.dedup_containment,
         "tiny_area_frac": args.tiny_area_frac, "giant_area_frac": args.giant_area_frac,
         "candidate": args.candidate, "mask_threshold": args.mask_threshold,
@@ -1111,11 +1106,8 @@ def run_settings(args, image_names=None):
         settings.update(far_piece_max_frac=FAR_PIECE_MAX_FRAC)
     if args.fin_threshold is not None:
         settings.update(fin_max_growth=args.fin_max_growth)
-    if args.prompt == "dino":
-        settings.update(dino_checkpoint=DINO_CHECKPOINT, dino_text=args.dino_text,
-                        dino_box_threshold=args.dino_box_threshold)
-    elif args.prompt == "yolo":
-        settings.update(yolo_weights=str(args.yolo_weights))
+    settings.update(dino_checkpoint=DINO_CHECKPOINT, dino_text=args.dino_text,
+                    dino_box_threshold=args.dino_box_threshold)
     return json.loads(json.dumps(settings))  # normalise types for comparison
 
 
@@ -1216,20 +1208,15 @@ def choose_directory(parent_dir: Path):
             print("Invalid input. Please enter a valid number.")
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--raw-dir", type=Path, default=None,
                         help="Directory of input images to process (searched recursively). "
                              "If not provided, you'll be prompted to choose from available datasets.")
     parser.add_argument("--out-dir", default="/workspace/data/processed/segmented", type=Path,
                         help="Root of the outputs; results nest under <out-dir>/<raw-dir name>/.")
-    parser.add_argument("--prompt", choices=["center", "yolo", "dino"], default="center",
-                        help="How to derive prompts for SAM.")
-    parser.add_argument("--yolo-weights", default="/workspace/data/model_cache/yolov8n.pt",
-                        help="Local YOLO checkpoint, pre-cached by scripts/download_yolo.py "
-                             "(use a FISH-trained one for real results).")
     parser.add_argument("--dino-text", default="fish.",
-                        help="Text prompt for Grounding DINO (--prompt dino). Lowercase, "
+                        help="Text prompt for Grounding DINO. Lowercase, "
                              "each concept ending in a period, e.g. 'fish.'.")
     parser.add_argument("--dino-box-threshold", type=float, default=0.35,
                         help="Minimum confidence for a Grounding DINO box to be kept. Tunable guess.")
@@ -1247,19 +1234,19 @@ def main():
                         help="Which of SAM's 3 candidate masks to keep per prompt: highest predicted "
                              "IoU (score, original behaviour) or most pixels after --mask-threshold "
                              "(largest; tends to keep fins).")
-    parser.add_argument("--mask-threshold", type=float, default=0.0,
-                        help="Logit above which a pixel is in a SAM mask (0.0 = SAM's own cut). "
-                             "Lower, e.g. -2, recovers translucent fins. Tunable guess.")
+    parser.add_argument("--mask-threshold", type=float, default=-1.0,
+                        help="Logit above which a pixel is in a SAM mask (0.0 = SAM's own cut; default "
+                             "%(default)s keeps more of the translucent fins).")
     parser.add_argument("--margin-frac", type=float, default=0.0,
                         help="Grow each final instance by max(1, round(f*sqrt(area))) px, never into "
                              "another instance. 0 = off. Tunable guess.")
-    parser.add_argument("--min-component-frac", type=float, default=0.0,
+    parser.add_argument("--min-component-frac", type=float, default=0.01,
                         help="Drop connected pieces of an instance smaller than this fraction of its "
-                             "area (the largest piece always stays). 0 = off. Tunable guess.")
-    parser.add_argument("--bleed-outside-frac", type=float, default=0.0,
-                        help="Bleed fallback (box prompts only): if more than this fraction of a mask lies "
-                             "outside its detector box, replace it (see bleed_fallback()). 0 = off. "
-                             "0.02 separated the reviewed bleed from OK masks.")
+                             "area (the largest piece always stays). 0 = off (default %(default)s).")
+    parser.add_argument("--bleed-outside-frac", type=float, default=0.02,
+                        help="Bleed fallback: if more than this fraction of a mask lies outside its "
+                             "detector box, replace it (see bleed_fallback()). 0 = off; the default "
+                             "%(default)s separated the reviewed bleed from OK masks.")
     parser.add_argument("--bleed-fill", type=float, nargs=2, default=(0.2, 0.9), metavar=("MIN", "MAX"),
                         help="Bleed fallback: a replacement must fill MIN..MAX of its detector box "
                              "(default: %(default)s).")
@@ -1270,20 +1257,20 @@ def main():
                         help="Bleed fallback: an inverted background candidate may cover at most this "
                              "fraction of its box outline (default: %(default)s, photos; tightly cropped "
                              "X-rays touch their box legitimately, 0.3 there).")
-    parser.add_argument("--wrong-region-fix", action="store_true",
-                        help="Box prompts only: re-prompt SAM (box + a point on the fish + points in the "
-                             "wrong region) when a mask leaves the middle of its box empty and runs along "
-                             "the box outline - the background around the fish or the corners of an X-ray "
-                             "canvas (see wrong_region_fix()). Off by default.")
-    parser.add_argument("--keep-near-frac", type=float, default=0.0,
+    parser.add_argument("--wrong-region-fix", action=argparse.BooleanOptionalAction, default=True,
+                        help="Re-prompt SAM (box + a point on the fish + points in the wrong region) when "
+                             "a mask leaves the middle of its box empty and runs along the box outline - "
+                             "the background around the fish or the corners of an X-ray canvas (see "
+                             "wrong_region_fix()). On by default.")
+    parser.add_argument("--keep-near-frac", type=float, default=0.02,
                         help="Drop pieces of an instance farther than f*sqrt(largest piece area) px from "
                              "the fish and smaller than %(far)s of its largest piece (labels, rulers, "
-                             "blobs, edge lines). 0 = off; 0.02 fit the reviewed sample."
+                             "blobs, edge lines). 0 = off; the default 0.02 fit the reviewed sample."
                              % {"far": FAR_PIECE_MAX_FRAC})
-    parser.add_argument("--fill-holes-frac", type=float, default=0.0,
+    parser.add_argument("--fill-holes-frac", type=float, default=0.02,
                         help="Fill holes of an instance of at most this fraction of its area (speckled "
-                             "fins, X-ray grids), never into another fish. 0 = off; 0.02 fit the "
-                             "reviewed sample.")
+                             "fins, X-ray grids), never into another fish. 0 = off; the default 0.02 fit "
+                             "the reviewed sample.")
     parser.add_argument("--fin-threshold", type=float, default=None,
                         help="After all other rules, add the parts of each mask's own SAM candidate with "
                              "logits above this value that touch the mask but not the image border "
@@ -1298,6 +1285,11 @@ def main():
                              "are processed; names not found under --raw-dir are an error.")
     parser.add_argument("--resume", action="store_true",
                         help="Continue an interrupted run, skipping images already in annotations.jsonl.")
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
     if args.fin_threshold is not None and args.fin_threshold >= args.mask_threshold:
         parser.error("--fin-threshold must be below --mask-threshold")
@@ -1346,15 +1338,7 @@ def main():
 
     sam = load_sam() if todo else None
     detector = None
-    if todo and args.prompt == "yolo":
-        from ultralytics import YOLO  # imported lazily so 'center' needs no install
-
-        yolo = YOLO(args.yolo_weights)
-
-        def detector(image):
-            r = yolo(image, verbose=False)[0]
-            return r.boxes.xyxy.cpu().numpy().reshape(-1, 4), r.boxes.conf.cpu().numpy()
-    elif todo and args.prompt == "dino":
+    if todo:
         dino_model, dino_processor = load_dino()
 
         def detector(image):
@@ -1370,7 +1354,7 @@ def main():
             except Exception as e:  # corrupt/truncated files: log and move on
                 result = f"unreadable: {type(e).__name__}: {e}"
             else:
-                result = segment_image(image, args.prompt, sam, detector, args)
+                result = segment_image(image, sam, detector, args)
 
             if isinstance(result, str):
                 record = {"file_name": rel, "status": "skipped", "reason": result}

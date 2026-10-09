@@ -185,13 +185,23 @@ def test_select_images_fails_loudly_on_unknown_names():
 def default_args(**kw):
     from types import SimpleNamespace
 
-    a = dict(raw_dir="raw", prompt="center", max_side=2048, dedup_containment=0.8, tiny_area_frac=0.001,
+    a = dict(raw_dir="raw", max_side=2048, dedup_containment=0.8, tiny_area_frac=0.001,
              giant_area_frac=0.9, candidate="score", mask_threshold=0.0, margin_frac=0.0, min_component_frac=0.0,
              image_list=None, bleed_outside_frac=0.0, bleed_fill=(0.2, 0.9), bleed_bg_border=0.3,
              bleed_max_box_edge=0.1, wrong_region_fix=False, keep_near_frac=0.0, fill_holes_frac=0.0,
-             fin_threshold=None, fin_max_growth=0.3)
+             fin_threshold=None, fin_max_growth=0.3, dino_text="fish.", dino_box_threshold=0.35)
     a.update(kw)
     return SimpleNamespace(**a)
+
+
+def test_cli_defaults_are_setting_d():
+    args = sf.build_parser().parse_args(["--raw-dir", "raw"])
+    assert (args.mask_threshold, args.min_component_frac, args.bleed_outside_frac, args.wrong_region_fix,
+            args.keep_near_frac, args.fill_holes_frac, args.bleed_max_box_edge, args.fin_threshold) == (
+        -1.0, 0.01, 0.02, True, 0.02, 0.02, 0.1, None)
+    assert sf.build_parser().parse_args(["--no-wrong-region-fix"]).wrong_region_fix is False
+    s = sf.run_settings(args, None)
+    assert s["prompt"] == "dino" and s["dino_text"] == "fish." and "yolo_weights" not in s
 
 
 def test_new_settings_are_recorded_and_list_content_is_hashed():

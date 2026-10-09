@@ -1,0 +1,39 @@
+# Part 1 of the pipeline: raw images -> labels -> masks -> drops -> split -> manifest.
+#
+#     python scripts/run_part1.py                      # everything, with this file
+#     python scripts/run_part1.py --steps split,manifest --name thesis
+#     python scripts/run_part1.py --dry-run            # print the commands only
+#
+# The mask review + error report are not in it: they are the human step between
+# "segment" and "merge" (scripts/review_masks.py, scripts/error_report.py), and
+# their outcome comes back as files in decisions_dir.
+
+# Run name. Outputs under processed_dir:
+#   segmented/<name>_full/<domain>/   segment_fish.py run (every image)
+#   segmented/<name>/<domain>/        curated run (drops applied)
+#   labels_<name>.csv                 labels with the label decisions applied
+#   split/<name>_seed<seed>/          specimen split
+#   manifest/<name>_seed<seed>/       manifest.csv, the input for training
+name: thesis
+
+raw_dir: data/raw/NHM_datensatz        # one subfolder per domain
+processed_dir: data/processed
+decisions_dir: pipeline/decisions      # tracked human decisions, keyed by image SHA-256
+hash_cache: data/processed/sha256_cache.json
+
+# Per domain: segment_fish.py options that differ from its defaults (the
+# defaults are the thesis setting D), and the QA drop rule applied in "merge".
+domains:
+  full_body:
+    segment: {}
+    qa_rule: null
+  Röntgen:
+    segment:
+      bleed_max_box_edge: 0.3            # tightly cropped X-rays touch their box legitimately
+    qa_rule: B                           # vault decisions/2026-10-08-xray-drop-rule-B
+
+split:
+  seed: 0
+  val_frac: 0.15
+  test_frac: 0.15
+  min_specimens: 5                       # specimen groups a genus needs in a domain to be evaluated there
