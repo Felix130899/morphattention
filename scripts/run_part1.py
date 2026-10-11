@@ -114,6 +114,7 @@ def commands(cfg, steps):
     if "split" in steps:
         out.append(("split", [py, str(SCRIPTS / "split_specimens.py"), "--labels", str(p["labels"]),
                               "--segmented", str(p["curated"]), "--out", str(p["split"]),
+                              "--class", str(s.get("class", "genus")),
                               "--seed", str(s["seed"]), "--val-frac", str(s["val_frac"]),
                               "--test-frac", str(s["test_frac"]), "--min-specimens", str(s["min_specimens"]),
                               *cache], None))

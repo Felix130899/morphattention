@@ -8,16 +8,19 @@ visible why an image is not used. Columns:
                      (file names hold catalog numbers, which stay out of git)
     domain           full_body / Röntgen
     species, genus   species as in labels.csv; genus = the word before any "(Subgenus)"
+    <class>          the split's class (split_specimens.py --class), when it is not
+                     species or genus already, e.g. binomial
     catalog_number   as parsed by extract_labels.py
     specimen         specimen group from split_specimens.py (usable images only)
     mask_path        the image's mask PNG in the curated run (usable images only)
     n_instances      number of fish masks
     status, reason   usable / dropped / skipped; reason for dropped and skipped
-                     (label decision, mask review, no detection, or no catalog
-                     number); a label drop wins over the mask status
+                     (label decision, mask review, no detection, no catalog
+                     number, or no value for the class); a label drop wins over
+                     the mask status
     needs_review     from labels.csv
     split            train / val / test / train_only, "none" when not usable
-    genus_evaluated  the genus is an evaluated class in this domain
+    <class>_evaluated  the image's class is evaluated in this domain (e.g. genus_evaluated)
 
 The 3 % mask margin is not applied here; training applies it when building
 the images. SHA-256 sums are cached in ``--hash-cache`` by path, size and
@@ -42,13 +45,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from segment_fish import git_state  # noqa: E402
-from split_specimens import file_sha256, genus_of, load_status, raw_dirs_of, resolve  # noqa: E402
-
-COLUMNS = ["file_name", "sha256", "domain", "species", "genus", "catalog_number", "specimen", "mask_path",
-           "n_instances", "status", "reason", "needs_review", "split", "genus_evaluated"]
+from split_specimens import (catalog_keys, class_of, file_sha256, genus_of, load_status, raw_dirs_of,  # noqa: E402
+                             resolve)
 
 
-def build_rows(labels, segmented, split_rows, raw_dirs, hash_cache):
+def columns(class_name):
+    """Manifest columns; the class gets its own column unless it is species or genus."""
+    extra = [] if class_name in ("species", "genus") else [class_name]
+    return ["file_name", "sha256", "domain", "species", "genus", *extra, "catalog_number", "specimen", "mask_path",
+            "n_instances", "status", "reason", "needs_review", "split", f"{class_name}_evaluated"]
+
+
+def build_rows(labels, segmented, split_rows, raw_dirs, hash_cache, class_name="genus"):
     status = load_status(segmented, raw_dirs)
     rows = []
     for r in labels:
@@ -60,7 +68,7 @@ def build_rows(labels, segmented, split_rows, raw_dirs, hash_cache):
             mask_note = f" (mask {state}{': ' + reason if reason else ''})" if state != "ok" else ""
             state, reason = "dropped", r["label_drop"] + mask_note
         elif state == "ok" and s is None:
-            state, reason = "dropped", "no catalog number"
+            state, reason = "dropped", "no catalog number" if not catalog_keys(r)[0] else f"no {class_name}"
         elif state == "ok":
             state = "usable"
         mask = Path(segmented) / domain / "masks" / f"{stem}.png" if state == "usable" else None
@@ -72,7 +80,10 @@ def build_rows(labels, segmented, split_rows, raw_dirs, hash_cache):
             "catalog_number": r["catalog_number"], "specimen": s["specimen"] if s else "",
             "mask_path": str(mask) if mask else "", "n_instances": n_inst if state == "usable" else "",
             "status": state, "reason": reason, "needs_review": r["needs_review"],
-            "split": s["split"] if s else "none", "genus_evaluated": s["genus_evaluated"] if s else "False"})
+            "split": s["split"] if s else "none",
+            f"{class_name}_evaluated": s[f"{class_name}_evaluated"] if s else "False"})
+        if class_name not in ("species", "genus"):
+            rows[-1][class_name] = class_of(r, class_name)
     return rows
 
 
@@ -91,6 +102,7 @@ def main():
     with open(args.split_dir / "split.csv", newline="") as f:
         split_rows = {r["file_name"]: r for r in csv.DictReader(f)}
     split_config = json.loads((args.split_dir / "run_config.json").read_text())
+    class_name = split_config["settings"].get("class", "genus")  # splits made before 2026-10-11: genus
     labels_sha = hashlib.sha256(args.labels.read_bytes()).hexdigest()
     if split_config["labels_sha256"] != labels_sha:
         raise SystemExit(f"{args.labels} changed since the split was made; rerun split_specimens.py first")
@@ -102,7 +114,7 @@ def main():
     cache = json.loads(args.hash_cache.read_text()) if args.hash_cache.exists() else {}
     n_cached = len(cache)
     try:
-        rows = build_rows(labels, args.segmented, split_rows, raw_dirs, cache)
+        rows = build_rows(labels, args.segmented, split_rows, raw_dirs, cache, class_name)
     finally:
         if len(cache) != n_cached:
             args.hash_cache.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +123,7 @@ def main():
     dup = [h for h, n in collections.Counter(r["sha256"] for r in rows).items() if n > 1]
     args.out.mkdir(parents=True, exist_ok=True)
     with open(args.out / "manifest.csv", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=COLUMNS)
+        w = csv.DictWriter(f, fieldnames=columns(class_name))
         w.writeheader()
         w.writerows(rows)
     counts = collections.Counter((r["domain"], r["status"], r["split"]) for r in rows)

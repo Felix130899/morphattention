@@ -60,12 +60,16 @@ domains:
     qa_rule: null
 
 # Train / val / test split by specimen (images of one specimen stay together).
-# The class is the genus (first word of the species) for now.
+#   class   what the model learns: genus (first word of the species), binomial
+#           (genus + epithet; "sp.", "cf.", abbreviated epithets have none), or
+#           any labels.csv column as written, e.g. species. Images without a
+#           value are left out (split/<...>/dropped_no_class.txt).
 split:
+  class: genus
   seed: 0
   val_frac: 0.15
   test_frac: 0.15
-  min_specimens: 5                       # specimen groups a genus needs in a domain to be evaluated there
+  min_specimens: 5                       # specimen groups a class needs in a domain to be evaluated there
 
 # Footer line of the review reports, e.g. image source and licence (null = none).
 attribution: null

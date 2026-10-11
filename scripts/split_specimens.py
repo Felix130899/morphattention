@@ -29,26 +29,34 @@ specimen of another museum, which gets its own group). Images without any
 catalog number can't be assigned to a specimen and are dropped (listed in
 dropped_no_catalog.txt).
 
-Classes are genera (the word before any "(Subgenus)" in the species). A genus
-is *evaluated* in a domain if it has at least ``--min-specimens`` specimen
-groups with usable images in that domain. Each group's genus is the most
-common genus among its usable images (ties: alphabetical), since a few
-groups carry synonyms. Per genus, groups are shuffled (seeded by seed +
-genus, so adding a genus leaves the others unchanged) and picked greedily
-for test, then val, until every evaluated domain has
-max(1, round(frac * specimens)) of them; preferring groups that don't push an
-already filled domain over its target. The rest is train. Groups of a genus
-evaluated in no domain are "train_only". Rows keep their own label genus and
-a ``genus_evaluated`` flag for their domain.
+Classes (``--class``, what the model learns): ``genus`` (default; the word
+before any "(Subgenus)" in the species), ``binomial`` (genus + the first full
+lowercase epithet; capitalised words after the genus are skipped as a subgenus
+written without parentheses; open nomenclature like "sp." / "cf." / "aff." or
+an abbreviated epithet like "eryth." before it, or no epithet at all, gives no
+binomial), or any labels.csv column as written (e.g. ``species``). Usable
+images with an empty class value can't be trained or evaluated and are dropped
+(listed in dropped_no_class.txt). A class is *evaluated* in a domain if it
+has at least ``--min-specimens`` specimen groups with usable images in that
+domain. Each group's class is the most common class among its usable images
+(ties: alphabetical), since a few groups carry synonyms. Per class, groups are
+shuffled (seeded by seed + class, so adding a class leaves the others
+unchanged) and picked greedily for test, then val, until every evaluated
+domain has max(1, round(frac * specimens)) of them; preferring groups that
+don't push an already filled domain over its target. The rest is train.
+Groups of a class evaluated in no domain are "train_only". Rows keep their own
+label class and a ``<class>_evaluated`` flag for their domain.
 
-Output (``--out``, in gitignored data/ - it holds catalog numbers):
+Output (``--out``, in gitignored data/ - it holds catalog numbers); <class> is
+the column name of the class, e.g. genus / genus_evaluated:
     split.csv          one row per usable image: file_name, domain, specimen,
-                       split, genus, genus_evaluated
+                       split, <class>, <class>_evaluated
     specimens.csv      one row per specimen group: specimen, catalog_numbers,
-                       genus, images per domain, split
-    balance.csv        per domain and genus: evaluated, specimens and images
+                       <class>, images per domain, split
+    balance.csv        per domain and class: evaluated, specimens and images
                        per split
     dropped_no_catalog.txt   usable images without a catalog number
+    dropped_no_class.txt     usable images with a catalog number but an empty class value
     duplicates.csv     byte-identical usable images: sha256, file_name, species,
                        specimen, split (not dropped here: which copy's label is
                        right is a naming decision)
@@ -125,6 +133,36 @@ def catalog_keys(row):
 def genus_of(species):
     m = re.match(r"[^\s(]+", str(species))
     return m.group(0) if m else ""
+
+
+OPEN_NOMENCLATURE = {"sp", "spp", "cf", "aff"}
+
+
+def binomial_of(species):
+    """Genus + the first full lowercase epithet, e.g. "Barbus (Barbodes) dobsoni" and
+    "Barbus Barbodes dobsoni" -> "Barbus dobsoni", "Tilapia adolfi-Std.1915" ->
+    "Tilapia adolfi"; "" for open nomenclature ("Garra sp. Iran", "Garra cf. x"),
+    an abbreviated epithet ("Scardinius eryth. scardafa", "Aphyosemion g.boehmi") or a genus alone."""
+    words = re.sub(r"\([^)]*\)", " ", str(species)).split()
+    for w in words[1:]:
+        if w[0].isupper():
+            continue  # subgenus (or locality) written without parentheses
+        m = re.match(r"[^\W\d_]+", w)
+        if (not m or w[m.end():].startswith(".") or not m.group(0).islower()  # "eryth.", "g.boehmi"
+                or m.group(0) in OPEN_NOMENCLATURE):
+            return ""
+        return f"{words[0]} {m.group(0)}"
+    return ""
+
+
+DERIVED_CLASSES = {"genus": genus_of, "binomial": binomial_of}
+
+
+def class_of(row, class_name):
+    """The row's class value: a class derived from its species, or the labels column as written."""
+    if class_name in DERIVED_CLASSES:
+        return DERIVED_CLASSES[class_name](row["species"]) if row.get("species") else ""
+    return (row.get(class_name) or "").strip()
 
 
 def resolve(path):
@@ -218,23 +256,23 @@ def majority(values):
 
 
 def assign_splits(groups, domains, seed, val_frac, test_frac, min_specimens):
-    """groups: {specimen: {"genus": g, "domains": set}} -> ({specimen: split},
-    {domain: set of evaluated genera})."""
-    by_genus = collections.defaultdict(list)
+    """groups: {specimen: {"class": c, "domains": set}} -> ({specimen: split},
+    {domain: set of evaluated classes})."""
+    by_class = collections.defaultdict(list)
     for sid, g in groups.items():
-        by_genus[g["genus"]].append(sid)
+        by_class[g["class"]].append(sid)
     split, evaluated = {}, {d: set() for d in domains}
-    for genus in sorted(by_genus):
-        sids = sorted(by_genus[genus])
+    for cls in sorted(by_class):
+        sids = sorted(by_class[cls])
         n = {d: sum(d in groups[s]["domains"] for s in sids) for d in domains}
         eval_d = [d for d in domains if n[d] >= min_specimens]
         for d in eval_d:
-            evaluated[d].add(genus)
+            evaluated[d].add(cls)
         if not eval_d:
             split.update({s: "train_only" for s in sids})
             continue
         pool = sids[:]
-        random.Random(f"{seed}/{genus}").shuffle(pool)
+        random.Random(f"{seed}/{cls}").shuffle(pool)
         for name, frac in (("test", test_frac), ("val", val_frac)):
             need = {d: max(1, round(frac * n[d])) for d in eval_d}
             while any(need.values()):
@@ -262,14 +300,21 @@ def main():
     parser.add_argument("--val-frac", type=float, default=0.15)
     parser.add_argument("--test-frac", type=float, default=0.15)
     parser.add_argument("--min-specimens", type=int, default=5,
-                        help="Specimen groups a genus needs in a domain to be evaluated there (default 5).")
+                        help="Specimen groups a class needs in a domain to be evaluated there (default 5).")
+    parser.add_argument("--class", dest="class_name", default="genus",
+                        help="What the model learns: genus (default) or binomial (derived from species), "
+                             "or a labels.csv column, e.g. species.")
     parser.add_argument("--hash-cache", type=Path, default=Path("data/processed/sha256_cache.json"))
     args = parser.parse_args()
     if args.min_specimens < 3:
         parser.error("--min-specimens must be >= 3 (one each for train, val, test)")
 
     with open(args.labels, newline="") as f:
-        labels = list(csv.DictReader(f))
+        reader = csv.DictReader(f)
+        labels = list(reader)
+    cls = args.class_name
+    if cls not in DERIVED_CLASSES and cls not in (reader.fieldnames or []):
+        parser.error(f"--class {cls!r}: not one of {sorted(DERIVED_CLASSES)} and not a column of {args.labels}")
     domains = sorted({r["photo_type"] for r in labels})
     status = load_status(args.segmented, domains)
     missing = [r["file_name"] for r in labels if r["file_name"] not in status]
@@ -286,31 +331,36 @@ def main():
             numbers[r["file_name"]] = nums
         else:
             no_catalog.append(r["file_name"])
-    rows = [r for r in usable if r["file_name"] in numbers]
-    sha = hash_images([r["file_name"] for r in rows], raw_dirs_of(args.segmented, domains), args.hash_cache)
+    # Specimen groups (and their ids) come from every usable image with a catalog
+    # number, whatever the class; images without a class value are left out after.
+    grouped = [r for r in usable if r["file_name"] in numbers]
+    sha = hash_images([r["file_name"] for r in grouped], raw_dirs_of(args.segmented, domains), args.hash_cache)
     by_sha = collections.defaultdict(list)
-    for r in rows:
+    for r in grouped:
         by_sha[sha[r["file_name"]]].append(r["file_name"])
     same_bytes = [names for names in by_sha.values() if len(names) > 1]
     specimen = build_groups(numbers, same_bytes)
+    no_class = [r["file_name"] for r in grouped if not class_of(r, cls)]
+    rows = [r for r in grouped if class_of(r, cls)]
 
     members = collections.defaultdict(list)
     for r in rows:
         members[specimen[r["file_name"]]].append(r)
-    groups = {sid: {"genus": majority(genus_of(r["species"]) for r in rs),
+    groups = {sid: {"class": majority(class_of(r, cls) for r in rs),
                     "domains": {r["photo_type"] for r in rs}} for sid, rs in members.items()}
     split, evaluated = assign_splits(groups, domains, args.seed, args.val_frac, args.test_frac,
                                      args.min_specimens)
 
     # The same, counting the images the mask review dropped as if they were usable:
     # which genera lost their evaluated status through the drops?
-    dropped_rows = [r for r in labels if status[r["file_name"]][0] == "dropped" and not r.get("label_drop")]
+    dropped_rows = [r for r in labels if status[r["file_name"]][0] == "dropped" and not r.get("label_drop")
+                    and class_of(r, cls)]
     with_drops = {**numbers, **{r["file_name"]: catalog_keys(r)[0] for r in dropped_rows if catalog_keys(r)[0]}}
     spec_d = build_groups(with_drops, same_bytes)
     mem_d = collections.defaultdict(list)
     for r in rows + [r for r in dropped_rows if r["file_name"] in with_drops]:
         mem_d[spec_d[r["file_name"]]].append(r)
-    groups_d = {sid: {"genus": majority(genus_of(r["species"]) for r in rs),
+    groups_d = {sid: {"class": majority(class_of(r, cls) for r in rs),
                       "domains": {r["photo_type"] for r in rs}} for sid, rs in mem_d.items()}
     _, evaluated_d = assign_splits(groups_d, domains, args.seed, args.val_frac, args.test_frac,
                                    args.min_specimens)
@@ -318,59 +368,60 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     with open(args.out / "split.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["file_name", "domain", "specimen", "split", "genus", "genus_evaluated"])
+        w.writerow(["file_name", "domain", "specimen", "split", cls, f"{cls}_evaluated"])
         for r in rows:
-            sid, g = specimen[r["file_name"]], genus_of(r["species"])
-            w.writerow([r["file_name"], r["photo_type"], sid, split[sid], g, g in evaluated[r["photo_type"]]])
+            sid, c = specimen[r["file_name"]], class_of(r, cls)
+            w.writerow([r["file_name"], r["photo_type"], sid, split[sid], c, c in evaluated[r["photo_type"]]])
     with open(args.out / "specimens.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["specimen", "catalog_numbers", "genus", *[f"images_{d}" for d in domains], "split"])
+        w.writerow(["specimen", "catalog_numbers", cls, *[f"images_{d}" for d in domains], "split"])
         for sid in sorted(members):
             nums = sorted(set().union(*(numbers[r["file_name"]] for r in members[sid])))
             per_d = collections.Counter(r["photo_type"] for r in members[sid])
-            w.writerow([sid, ";".join(f"{museum}{x}" for museum, x in nums), groups[sid]["genus"],
+            w.writerow([sid, ";".join(f"{museum}{x}" for museum, x in nums), groups[sid]["class"],
                         *[per_d[d] for d in domains], split[sid]])
     (args.out / "dropped_no_catalog.txt").write_text("".join(n + "\n" for n in no_catalog))
-    species_of = {r["file_name"]: r["species"] for r in rows}
+    (args.out / "dropped_no_class.txt").write_text("".join(n + "\n" for n in no_class))
+    species_of = {r["file_name"]: r["species"] for r in grouped}
     with open(args.out / "duplicates.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["sha256", "file_name", "species", "specimen", "split"])
         for names in sorted(same_bytes):
             for n in names:
-                w.writerow([sha[n], n, species_of[n], specimen[n], split[specimen[n]]])
+                w.writerow([sha[n], n, species_of[n], specimen[n], split.get(specimen[n], "none")])
 
     balance = collections.defaultdict(lambda: collections.Counter())
     for r in rows:
         sid, d = specimen[r["file_name"]], r["photo_type"]
-        g = groups[sid]["genus"]
-        balance[(d, g)][f"images_{split[sid]}"] += 1
+        c = groups[sid]["class"]
+        balance[(d, c)][f"images_{split[sid]}"] += 1
     for sid, g in groups.items():
         for d in g["domains"]:
-            balance[(d, g["genus"])][f"specimens_{split[sid]}"] += 1
+            balance[(d, g["class"])][f"specimens_{split[sid]}"] += 1
     all_splits = (*SPLITS, "train_only")
     cols = [f"{k}_{s}" for k in ("specimens", "images") for s in all_splits]
     with open(args.out / "balance.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["domain", "genus", "evaluated", *cols])
-        for (d, g) in sorted(balance):
-            w.writerow([d, g, g in evaluated[d], *[balance[(d, g)][c] for c in cols]])
+        w.writerow(["domain", cls, "evaluated", *cols])
+        for (d, c) in sorted(balance):
+            w.writerow([d, c, c in evaluated[d], *[balance[(d, c)][col] for col in cols]])
 
     summary = {}
     for d in domains:
         dr = [r for r in rows if r["photo_type"] == d]
         img = collections.Counter(split[specimen[r["file_name"]]] for r in dr)
         ev = collections.Counter(split[specimen[r["file_name"]]] for r in dr
-                                 if genus_of(r["species"]) in evaluated[d])
+                                 if class_of(r, cls) in evaluated[d])
         spec = collections.Counter(split[s] for s, g in groups.items() if d in g["domains"])
-        summary[d] = {"usable_images": len(dr), "evaluated_genera": len(evaluated[d]),
-                      "images": dict(img), "images_of_evaluated_genera": dict(ev), "specimens": dict(spec),
+        summary[d] = {"usable_images": len(dr), "evaluated_classes": len(evaluated[d]),
+                      "images": dict(img), "images_of_evaluated_classes": dict(ev), "specimens": dict(spec),
                       "lost_evaluation_through_drops": sorted(evaluated_d[d] - evaluated[d])}
-    label_genus_differs = sum(genus_of(r["species"]) != groups[specimen[r["file_name"]]]["genus"] for r in rows)
+    label_class_differs = sum(class_of(r, cls) != groups[specimen[r["file_name"]]]["class"] for r in rows)
     counts = {"labels_rows": len(labels), "label_dropped": sum(bool(r.get("label_drop")) for r in labels),
-              "usable": len(usable), "no_catalog_dropped": len(no_catalog),
+              "usable": len(usable), "no_catalog_dropped": len(no_catalog), "no_class_dropped": len(no_class),
               "catalog_numbers": len(set().union(*numbers.values())),
               "specimen_groups": len(groups), "images_with_ignored_dash_tail": odd_tails,
-              "rows_whose_genus_differs_from_their_group": label_genus_differs,
+              "rows_whose_class_differs_from_their_group": label_class_differs,
               "byte_identical_sets": len(same_bytes),
               "byte_identical_sets_with_different_species": sum(
                   len({species_of[n] for n in names}) > 1 for names in same_bytes)}
@@ -378,25 +429,25 @@ def main():
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
         "labels": str(args.labels), "labels_sha256": hashlib.sha256(args.labels.read_bytes()).hexdigest(),
         "segmented": str(args.segmented),
-        "settings": {"seed": args.seed, "val_frac": args.val_frac, "test_frac": args.test_frac,
+        "settings": {"class": cls, "seed": args.seed, "val_frac": args.val_frac, "test_frac": args.test_frac,
                      "min_specimens": args.min_specimens, "max_range": MAX_RANGE},
         "counts": counts, "per_domain": summary, **git_state()}, indent=1, ensure_ascii=False))
 
-    print(f"{counts['usable']} usable images, {len(no_catalog)} without catalog number dropped; "
-          f"{len(groups)} specimen groups ({odd_tails} images with a '-' sub-index tail ignored)")
-    print(f"{label_genus_differs} images carry a genus other than their group's (synonyms)")
+    print(f"{counts['usable']} usable images, {len(no_catalog)} without catalog number and {len(no_class)} "
+          f"without a {cls} dropped; {len(groups)} specimen groups ({odd_tails} images with a '-' sub-index tail ignored)")
+    print(f"class = {cls}: {label_class_differs} images carry a {cls} other than their group's (synonyms)")
     print(f"{len(same_bytes)} sets of byte-identical images, kept in one group each "
           f"({counts['byte_identical_sets_with_different_species']} with different species names): duplicates.csv")
     for d, s in summary.items():
-        print(f"\n{d}: {s['usable_images']} images, {s['evaluated_genera']} evaluated genera "
+        print(f"\n{d}: {s['usable_images']} images, {s['evaluated_classes']} evaluated classes "
               f"(>= {args.min_specimens} specimens)")
         for name in (*SPLITS, "train_only"):
             print(f"  {name:10s} specimens {s['specimens'].get(name, 0):5d}   images {s['images'].get(name, 0):6d}"
-                  f"   of evaluated genera {s['images_of_evaluated_genera'].get(name, 0):6d}")
+                  f"   of evaluated classes {s['images_of_evaluated_classes'].get(name, 0):6d}")
         if s["lost_evaluation_through_drops"]:
             print(f"  below {args.min_specimens} specimens only because of the mask drops: "
                   + ", ".join(s["lost_evaluation_through_drops"]))
-    print(f"\nWrote {args.out}/split.csv, specimens.csv, balance.csv, run_config.json")
+    print(f"\nWrote {args.out}/split.csv, specimens.csv, balance.csv, dropped_no_*.txt, run_config.json")
 
 
 if __name__ == "__main__":

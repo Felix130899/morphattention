@@ -7,11 +7,14 @@ python tests/test_split_manifest.py
 import collections
 import csv
 import json
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "scripts"))
 
 import build_manifest as bm  # noqa: E402
 import split_specimens as ss  # noqa: E402
@@ -59,6 +62,21 @@ def test_genus_of():
     assert ss.genus_of("Barbus sp.") == "Barbus"
 
 
+def test_binomial_and_class_of():
+    for species, want in [("Salmo trutta", "Salmo trutta"), ("Barbus (Barbodes) dobsoni", "Barbus dobsoni"),
+                          ("Barbus Barbodes dobsoni", "Barbus dobsoni"), ("Abramis elongatus asianus", "Abramis elongatus"),
+                          ("Agosia nubila carringtonii(Rh osculus)", "Agosia nubila"),
+                          ("Tilapia adolfi-Std.1915", "Tilapia adolfi"), ("Coregonus sp.", ""),
+                          ("Coregonus sp.(heads)", ""), ("Garra cf. quadrimaculata", ""), ("Garra aff. dembeensis", ""),
+                          ("Scardinius eryth. scardafa", ""), ("Aphyosemion g.boehmi", ""), ("Corydoras sp", ""),
+                          ("Alburnus mento=Sq.cephalus", "Alburnus mento"), ("Coregonus", ""), ("Loricaria(Rineloricaria)", ""), ("", "")]:
+        assert ss.binomial_of(species) == want, (species, ss.binomial_of(species))
+    row = {"species": "Barbus Barbodes dobsoni", "origin": " lake "}
+    assert [ss.class_of(row, c) for c in ("genus", "binomial", "species", "origin", "missing")] == [
+        "Barbus", "Barbus dobsoni", "Barbus Barbodes dobsoni", "lake", ""]
+    assert ss.class_of({"species": ""}, "genus") == ""
+
+
 def test_overlapping_numbers_form_one_group():
     groups = ss.build_groups({"series": {10, 11, 12}, "single": {11}, "other": {50}, "later": {5}})
     assert groups["series"] == groups["single"] != groups["other"]
@@ -68,12 +86,12 @@ def test_overlapping_numbers_form_one_group():
 
 
 def make_groups(spec):
-    """spec: {genus: [domains string per group]}, e.g. {"A": ["fr", "f"]} (f = full_body, r = Röntgen)."""
+    """spec: {class: [domains string per group]}, e.g. {"A": ["fr", "f"]} (f = full_body, r = Röntgen)."""
     groups, k = {}, 0
-    for genus, ds in spec.items():
+    for cls, ds in spec.items():
         for d in ds:
             k += 1
-            groups[f"S{k:05d}"] = {"genus": genus, "domains": {{"f": "full_body", "r": "Röntgen"}[c] for c in d}}
+            groups[f"S{k:05d}"] = {"class": cls, "domains": {{"f": "full_body", "r": "Röntgen"}[c] for c in d}}
     return groups
 
 
@@ -83,7 +101,7 @@ def test_assign_splits_targets_and_train_only():
     split, evaluated = ss.assign_splits(groups, domains, 0, 0.15, 0.15, 5)
     by = collections.defaultdict(collections.Counter)
     for sid, s in split.items():
-        by[groups[sid]["genus"]][s] += 1
+        by[groups[sid]["class"]][s] += 1
     assert by["Big"] == {"train": 14, "val": 3, "test": 3}
     assert by["Five"] == {"train": 3, "val": 1, "test": 1}
     assert by["Rare"] == {"train_only": 4}
@@ -98,7 +116,7 @@ def test_assign_splits_targets_and_train_only():
 def test_adding_a_genus_leaves_others_unchanged():
     domains = ["full_body", "Röntgen"]
     base = make_groups({"Alpha": ["f"] * 8})
-    more = {**base, **{f"S9{k:04d}": {"genus": "Beta", "domains": {"full_body"}} for k in range(8)}}
+    more = {**base, **{f"S9{k:04d}": {"class": "Beta", "domains": {"full_body"}} for k in range(8)}}
     a = ss.assign_splits(base, domains, 0, 0.15, 0.15, 5)[0]
     b = ss.assign_splits(more, domains, 0, 0.15, 0.15, 5)[0]
     assert all(b[s] == a[s] for s in a)
@@ -118,7 +136,7 @@ def test_manifest_rows():
         raw = tmp / "raw" / "full_body"
         raw.mkdir(parents=True)
         names = ["A_b_NMW11111_WEB.jpg", "A_b_NMW22222_WEB.jpg", "A_b_NMW33333_WEB.jpg", "A_b_WEB.jpg",
-                 "A_b_NMW44444_WEB.jpg"]
+                 "A_b_NMW44444_WEB.jpg", "A_b_NMW55555_WEB.jpg"]
         for k, n in enumerate(names):
             (raw / n).write_bytes(bytes([k]))
         write_run(tmp / "seg" / "full_body", raw, [
@@ -126,11 +144,13 @@ def test_manifest_rows():
             {"file_name": names[1], "status": "dropped", "reason": "after fallback: bleed"},
             {"file_name": names[2], "status": "skipped", "instances": []},
             {"file_name": names[3], "status": "ok", "instances": [{}]},
-            {"file_name": names[4], "status": "ok", "instances": [{}]}], [names[0], names[3], names[4]])
+            {"file_name": names[4], "status": "ok", "instances": [{}]},
+            {"file_name": names[5], "status": "ok", "instances": [{}]}], [names[0], names[3], names[4], names[5]])
         (tmp / "seg" / "full_body" / "skipped.txt").write_text(f"{names[2]}\tno_detection\n")
         labels = [{"file_name": f"full_body/{n}", "photo_type": "full_body", "species": "A b",
                    "catalog_number": "", "needs_review": "False"} for n in names]
         labels[4]["label_drop"] = "needs_review: a figure"
+        labels[5]["species"] = ""  # catalog number, but no species: no genus
         labels[1]["label_drop"] = "catalog conflict: A b"
         split_rows = {f"full_body/{names[0]}": {"specimen": "S00001", "split": "test", "genus_evaluated": "True"}}
         cache = {}
@@ -142,11 +162,62 @@ def test_manifest_rows():
                         False, ""),
                        ("skipped", "no_detection", "none", "", False, ""),
                        ("dropped", "no catalog number", "none", "", False, ""),
-                       ("dropped", "needs_review: a figure", "none", "", False, "")]
-        assert len({r["sha256"] for r in rows}) == 5 and len(cache) == 5
+                       ("dropped", "needs_review: a figure", "none", "", False, ""),
+                       ("dropped", "no genus", "none", "", False, "")]
+        assert len({r["sha256"] for r in rows}) == 6 and len(cache) == 6
         # the cache is used when size and mtime are unchanged
         cache[str(raw / names[0])][2] = "cached"
         assert bm.file_sha256(raw / names[0], cache) == "cached"
+
+
+def test_manifest_columns_follow_the_class():
+    assert bm.columns("genus")[3:6] == ["species", "genus", "catalog_number"] and bm.columns("genus")[-1] == "genus_evaluated"
+    assert "binomial" not in bm.columns("species") and bm.columns("species")[-1] == "species_evaluated"
+    assert bm.columns("origin")[3:7] == ["species", "genus", "origin", "catalog_number"]
+
+
+def run_split(labels_csv, seg, out, cls):
+    env = {**os.environ, "PYTHONPATH": str(REPO / "src")}
+    return subprocess.run([sys.executable, str(REPO / "scripts" / "split_specimens.py"), "--labels", str(labels_csv),
+                           "--segmented", str(seg), "--out", str(out), "--class", cls, "--min-specimens", "3",
+                           "--hash-cache", str(out.parent / f"cache_{cls}.json")],
+                          capture_output=True, text=True, env=env)
+
+
+def test_split_by_a_labels_column_keeps_the_specimens():
+    """class = an own labels column (origin): same specimen groups as class = genus, images without a
+    value listed in dropped_no_class.txt, columns named after the class."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        raw = tmp / "raw" / "full_body"
+        raw.mkdir(parents=True)
+        rows = []
+        for k in range(12):
+            name = f"A_b_NMW{10000 + k}_WEB.jpg"
+            (raw / name).write_bytes(bytes([k]))
+            rows.append({"file_name": f"full_body/{name}", "photo_type": "full_body", "species": "A b",
+                         "catalog_number": f"NMW{10000 + k}", "needs_review": "False", "label_drop": "",
+                         "origin": "" if k == 11 else ("lake" if k % 2 else "river")})
+        write_run(tmp / "seg" / "full_body", raw,
+                  [{"file_name": r["file_name"].split("/", 1)[1], "status": "ok", "instances": [{}]} for r in rows], [])
+        labels_csv = tmp / "labels.csv"
+        with open(labels_csv, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+        for cls in ("genus", "origin"):
+            res = run_split(labels_csv, tmp / "seg", tmp / f"split_{cls}", cls)
+            assert res.returncode == 0, res.stderr
+        by = {cls: list(csv.DictReader(open(tmp / f"split_{cls}" / "split.csv"))) for cls in ("genus", "origin")}
+        assert list(by["origin"][0]) == ["file_name", "domain", "specimen", "split", "origin", "origin_evaluated"]
+        assert len(by["genus"]) == 12 and len(by["origin"]) == 11
+        genus_ids = {r["file_name"]: r["specimen"] for r in by["genus"]}
+        assert all(genus_ids[r["file_name"]] == r["specimen"] for r in by["origin"])  # ids don't depend on the class
+        assert {r["origin"] for r in by["origin"]} == {"lake", "river"} and all(r["origin_evaluated"] == "True" for r in by["origin"])
+        assert (tmp / "split_origin" / "dropped_no_class.txt").read_text() == f'{rows[11]["file_name"]}\n'
+        assert json.loads((tmp / "split_origin" / "run_config.json").read_text())["settings"]["class"] == "origin"
+        res = run_split(labels_csv, tmp / "seg", tmp / "split_x", "colour")
+        assert res.returncode != 0 and "not a column" in res.stderr
 
 
 if __name__ == "__main__":

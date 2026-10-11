@@ -48,6 +48,7 @@ def test_commands_follow_the_thesis_config():
         assert ("--bleed-max-box-edge", "0.3") in pairs(argv["segment Röntgen"])
         assert ("--bleed-max-box-edge", "0.1") not in pairs(argv["segment Röntgen"])
         assert "--qa-rule" not in argv["merge full_body"] and argv["merge Röntgen"][-2:] == ["--qa-rule", "B"]
+        assert ("--class", "genus") in pairs(argv["split"])
         assert str(Path(tmp) / "labels_thesis.csv") in argv["split"] and str(Path(tmp) / "split" / "thesis_seed0") in argv["manifest"]
         # an existing curated dir is not merged again
         (Path(tmp) / "segmented" / "thesis" / "Röntgen").mkdir(parents=True)
