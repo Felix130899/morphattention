@@ -1,0 +1,3 @@
+# Images dropped after a mask review of domain DOMAIN. Copy to mask_drops_<domain>.tsv
+# (one per domain of the config). Key: SHA-256 of the raw image file (sha256sum <file>).
+sha256	reason

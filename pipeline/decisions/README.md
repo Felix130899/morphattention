@@ -1,5 +1,8 @@
 # Human decisions the pipeline reads
 
+The thesis decisions for the NHM Wien images, read via `pipeline/config_thesis_nhm.yaml`. For your own dataset
+start from the empty copies in `pipeline/decisions_template/` instead.
+
 Every decision a person made about the dataset, as small tab-separated files, so a rerun from the raw images
 gives the same curated set without asking anyone again. Images are keyed by the **SHA-256 of the image file's
 bytes**, never by file name: NHM file names contain catalog numbers, which stay out of this public repo.

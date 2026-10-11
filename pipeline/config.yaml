@@ -1,12 +1,22 @@
-# Part 1 of the pipeline: raw images -> labels -> masks -> drops -> split -> manifest.
+# Part 1 of the pipeline for your own dataset: raw images -> labels -> masks ->
+# drops -> split -> manifest. Neutral start: plain Grounding DINO + SAM, every
+# mask fix off, no drop rule, no decisions yet. The thesis run (NHM Wien,
+# setting D, Neo's decisions) is pipeline/config_thesis_nhm.yaml.
 #
 #     python scripts/run_part1.py                      # everything, with this file
-#     python scripts/run_part1.py --steps split,manifest --name thesis
+#     python scripts/run_part1.py --steps labels,segment
 #     python scripts/run_part1.py --dry-run            # print the commands only
 #
+# Before the first run:
+#   1. put your images under raw_dir, one subfolder per domain (e.g. photos/, xrays/)
+#      and list those subfolders under "domains" below
+#   2. cp -r pipeline/decisions_template <decisions_dir>, then per domain
+#      mv mask_drops_DOMAIN.tsv mask_drops_<domain>.tsv (header only = no decisions)
+#
 # The mask review + error report are not in it: they are the human step between
-# "segment" and "merge" (scripts/review_masks.py, scripts/error_report.py), and
-# their outcome comes back as files in decisions_dir.
+# "segment" and "merge" (scripts/review_masks.py, scripts/error_report.py). Their
+# outcome comes back as rows in the decision files, or as a changed setting below
+# and a rerun under a new name.
 
 # Run name. Outputs under processed_dir:
 #   segmented/<name>_full/<domain>/   segment_fish.py run (every image)
@@ -14,24 +24,42 @@
 #   labels_<name>.csv                 labels with the label decisions applied
 #   split/<name>_seed<seed>/          specimen split
 #   manifest/<name>_seed<seed>/       manifest.csv, the input for training
-name: thesis
+name: my_dataset
 
-raw_dir: data/raw/NHM_datensatz        # one subfolder per domain
+raw_dir: data/raw/my_dataset           # one subfolder per domain
 processed_dir: data/processed
-decisions_dir: pipeline/decisions      # tracked human decisions, keyed by image SHA-256
+decisions_dir: pipeline/decisions_my_dataset   # your copy of pipeline/decisions_template/
 hash_cache: data/processed/sha256_cache.json
 
-# Per domain: segment_fish.py options that differ from its defaults (the
-# defaults are the thesis setting D), and the QA drop rule applied in "merge".
+# segment_fish.py settings for every domain (python scripts/segment_fish.py --help
+# has the details). Detection first, then the mask fixes, all off here; the
+# value the thesis used is behind "thesis". Switch one fix on at a time, rerun
+# under a new name and compare the two runs in the review, so you know which
+# setting fixed (or broke) what.
+segment:
+  # detection
+  dino_text: "fish."            # Grounding DINO prompt: lowercase, each concept ending in a period
+  dino_box_threshold: 0.35      # min. box confidence; lower finds more fish and more false boxes. thesis 0.35
+  # mask fixes
+  mask_threshold: 0.0           # SAM logit cut; below 0 keeps more of thin, translucent fins. thesis -1.0
+  min_component_frac: 0         # drop specks below this fraction of the mask. thesis 0.01
+  bleed_outside_frac: 0         # mask bleeding out of its box by more than this -> replace it. thesis 0.02
+  bleed_max_box_edge: 0.1       # used by the bleed fix only; tightly cropped images need more. thesis 0.1 photos, 0.3 X-rays
+  wrong_region_fix: false       # re-prompt SAM when the mask is the background around the fish. thesis true
+  keep_near_frac: 0             # drop small pieces far from the fish (labels, rulers). thesis 0.02
+  fill_holes_frac: 0            # fill small holes (speckled fins, X-ray grids). thesis 0.02
+
+# One entry per subfolder of raw_dir. "segment": settings that differ from the
+# block above for this domain. "qa_rule": a drop rule on the QA fields of each
+# mask, applied in "merge" (null = none; B = the thesis X-ray rule, see
+# merge_runs.py qa_rule_b).
 domains:
-  full_body:
+  photos:
     segment: {}
     qa_rule: null
-  Röntgen:
-    segment:
-      bleed_max_box_edge: 0.3            # tightly cropped X-rays touch their box legitimately
-    qa_rule: B                           # vault decisions/2026-10-08-xray-drop-rule-B
 
+# Train / val / test split by specimen (images of one specimen stay together).
+# The class is the genus (first word of the species) for now.
 split:
   seed: 0
   val_frac: 0.15

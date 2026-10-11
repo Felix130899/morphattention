@@ -28,7 +28,8 @@ vault/thesis-log/experiments/mask-quality-history.md.)
 bleed fallback at 2 % outside the box, wrong-region fix on, far pieces and
 small holes at 0.02. One setting differs per domain: ``--bleed-max-box-edge``
 0.1 for photos (default), 0.3 for X-rays. ``scripts/run_part1.py`` passes it
-from ``pipeline/config.yaml``.
+from ``pipeline/config_thesis_nhm.yaml`` (its neutral ``pipeline/config.yaml``
+switches every fix off).
 
 Per image: detect -> SAM (3 candidates per prompt; threshold the mask logits
 at ``--mask-threshold``; keep one candidate per ``--candidate``) -> drop empty

@@ -64,8 +64,10 @@ no pre-conversion is needed. Outputs nest under the selected folder's name —
 processing several folders never overwrites earlier runs. Prompts are
 Grounding DINO boxes ("fish."); the defaults are the thesis setting D, except
 `--bleed-max-box-edge 0.3` for X-rays. The whole of part 1 (labels → masks →
-drops → split → manifest) runs with `python scripts/run_part1.py`, settings in
-`pipeline/config.yaml`.
+drops → split → manifest) runs with `python scripts/run_part1.py`: the default
+`pipeline/config.yaml` is a neutral start for your own dataset (every mask fix off,
+decisions from a copy of `pipeline/decisions_template/`), the thesis run is
+`python scripts/run_part1.py --config pipeline/config_thesis_nhm.yaml`.
 
 ```bash
 docker compose run --rm vit-project python scripts/segment_fish.py \

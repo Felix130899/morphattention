@@ -16,8 +16,13 @@ The random mask review and the error report are the human step between
 decision files. Every step writes its own run_config.json; the effective config
 (after --name) is written to segmented/<name>/part1_config.yaml.
 
+The default config (pipeline/config.yaml) is neutral: every mask fix off, no
+decisions. The thesis run is pipeline/config_thesis_nhm.yaml. Decision files
+are never optional: before anything runs, a missing one stops the run with a
+hint to copy it from pipeline/decisions_template/ (header only = no decisions).
+
     python scripts/run_part1.py
-    python scripts/run_part1.py --config pipeline/config.yaml --steps split,manifest --dry-run
+    python scripts/run_part1.py --config pipeline/config_thesis_nhm.yaml --steps split,manifest --dry-run
 """
 
 import argparse
@@ -30,7 +35,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "scripts"
+TEMPLATE = Path("pipeline") / "decisions_template"
 STEPS = ("labels", "segment", "merge", "split", "manifest")
+LABEL_SHEETS = ("genus_spelling.tsv", "catalog_conflicts.tsv", "needs_review.tsv")
 
 
 def cli_flags(options):
@@ -60,6 +67,28 @@ def paths(cfg):
             "manifest": p / "manifest" / f"{name}_seed{seed}"}
 
 
+def segment_options(cfg, domain):
+    """The config's segment block for all domains, updated by the domain's own."""
+    return {**(cfg.get("segment") or {}), **(cfg["domains"][domain].get("segment") or {})}
+
+
+def missing_inputs(cfg, steps):
+    """What the chosen steps need but is not on disk, as messages (empty = all there)."""
+    raw, dec = Path(cfg["raw_dir"]), Path(cfg["decisions_dir"])
+    out = []
+    if "labels" in steps:
+        if not raw.is_dir():
+            out.append(f"raw_dir {raw} does not exist")
+        out += [f"{dec / 'labels' / s} missing: copy {TEMPLATE / 'labels' / s}"
+                for s in LABEL_SHEETS if not (dec / "labels" / s).is_file()]
+    for domain in cfg["domains"]:
+        if "segment" in steps and not (raw / domain).is_dir():
+            out.append(f"{raw / domain} does not exist (domains are the subfolders of raw_dir)")
+        if "merge" in steps and not (dec / f"mask_drops_{domain}.tsv").is_file():
+            out.append(f"{dec / f'mask_drops_{domain}.tsv'} missing: copy {TEMPLATE / 'mask_drops_DOMAIN.tsv'}")
+    return out
+
+
 def commands(cfg, steps):
     """[(step, argv or None, skip reason or None)] for the chosen steps, in pipeline order."""
     out, py = [], sys.executable
@@ -68,11 +97,11 @@ def commands(cfg, steps):
     if "labels" in steps:
         out.append(("labels", [py, str(SCRIPTS / "extract_labels.py"), "--raw-dir", str(raw),
                                "--decisions", str(dec / "labels"), "--out-csv", str(p["labels"]), *cache], None))
-    for domain, d in cfg["domains"].items():
+    for domain in cfg["domains"]:
         if "segment" in steps:
             out.append((f"segment {domain}", [py, str(SCRIPTS / "segment_fish.py"), "--raw-dir", str(raw / domain),
                                               "--out-dir", str(p["full"]), "--resume",
-                                              *cli_flags(d.get("segment") or {})], None))
+                                              *cli_flags(segment_options(cfg, domain))], None))
     for domain, d in cfg["domains"].items():
         if "merge" in steps:
             out_dir = p["curated"] / domain
@@ -111,6 +140,11 @@ def main():
         cfg["name"] = args.name
 
     os.chdir(REPO_ROOT)  # config paths are relative to the repo root
+    missing = missing_inputs(cfg, steps)
+    if missing and not args.dry_run:
+        raise SystemExit(f"{args.config}: {len(missing)} input(s) missing, nothing run:\n  " + "\n  ".join(missing))
+    for m in missing:
+        print(f"!!! missing: {m}", flush=True)
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO_ROOT / "src"),
                                                                        os.environ.get("PYTHONPATH")]))}
     for step, argv, skip in commands(cfg, steps):

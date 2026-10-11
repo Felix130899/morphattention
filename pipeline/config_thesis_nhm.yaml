@@ -1,0 +1,54 @@
+# Part 1 as run for the thesis: NHM Wien images, setting D, Neo's decisions.
+#
+#     python scripts/run_part1.py --config pipeline/config_thesis_nhm.yaml
+#     python scripts/run_part1.py --config pipeline/config_thesis_nhm.yaml --steps split,manifest --name thesis
+#     python scripts/run_part1.py --config pipeline/config_thesis_nhm.yaml --dry-run   # print the commands only
+#
+# For another dataset start from pipeline/config.yaml (every mask fix off, no
+# decisions); what each setting does is explained there.
+#
+# The mask review + error report are not in it: they are the human step between
+# "segment" and "merge" (scripts/review_masks.py, scripts/error_report.py), and
+# their outcome comes back as files in decisions_dir.
+
+# Run name. Outputs under processed_dir:
+#   segmented/<name>_full/<domain>/   segment_fish.py run (every image)
+#   segmented/<name>/<domain>/        curated run (drops applied)
+#   labels_<name>.csv                 labels with the label decisions applied
+#   split/<name>_seed<seed>/          specimen split
+#   manifest/<name>_seed<seed>/       manifest.csv, the input for training
+name: thesis
+
+raw_dir: data/raw/NHM_datensatz        # one subfolder per domain
+processed_dir: data/processed
+decisions_dir: pipeline/decisions      # tracked human decisions, keyed by image SHA-256
+hash_cache: data/processed/sha256_cache.json
+
+# segment_fish.py settings for every domain: setting D (vault
+# experiments/2026-10-04-random-review-fixes), the same values as
+# segment_fish.py's own defaults, written out so this file is the record.
+segment:
+  mask_threshold: -1.0
+  min_component_frac: 0.01
+  bleed_outside_frac: 0.02
+  bleed_max_box_edge: 0.1
+  wrong_region_fix: true
+  keep_near_frac: 0.02
+  fill_holes_frac: 0.02
+
+# Per domain: segment settings that differ from the block above, and the QA
+# drop rule applied in "merge".
+domains:
+  full_body:
+    segment: {}
+    qa_rule: null
+  Röntgen:
+    segment:
+      bleed_max_box_edge: 0.3            # tightly cropped X-rays touch their box legitimately
+    qa_rule: B                           # vault decisions/2026-10-08-xray-drop-rule-B
+
+split:
+  seed: 0
+  val_frac: 0.15
+  test_frac: 0.15
+  min_specimens: 5                       # specimen groups a genus needs in a domain to be evaluated there
