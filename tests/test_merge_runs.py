@@ -1,4 +1,4 @@
-"""Tests for scripts/merge_runs.py on tiny fake runs (no model, no real images).
+"""Tests for scripts/pipeline/merge_runs.py on tiny fake runs (no model, no real images).
 
 Runs under pytest or directly: python tests/test_merge_runs.py
 """
@@ -9,11 +9,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 import merge_runs as mr  # noqa: E402
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "merge_runs.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "pipeline" / "merge_runs.py"
 
 
 def rec(name, tag, status="ok"):

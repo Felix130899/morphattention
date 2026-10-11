@@ -1,4 +1,4 @@
-"""Tests for scripts/mask_changes.py on tiny fake runs (no model, no real images).
+"""Tests for scripts/review/mask_changes.py on tiny fake runs (no model, no real images).
 
 Runs under pytest or directly: python tests/test_mask_changes.py
 """
@@ -12,11 +12,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 import mask_changes as mc  # noqa: E402
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "mask_changes.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "review" / "mask_changes.py"
 
 
 def fake_run(root, masks, records=None, skipped=()):

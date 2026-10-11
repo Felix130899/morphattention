@@ -38,7 +38,7 @@ your other columns in their order, label_change (what was changed) and
 label_drop (why the image is not used; empty = used). Dropped rows stay in the
 CSV, so the row count still matches the image count.
 
-    python scripts/import_labels.py --raw-dir data/raw/my_dataset --csv data/raw/my_dataset/labels.csv \\
+    python scripts/pipeline/import_labels.py --raw-dir data/raw/my_dataset --csv data/raw/my_dataset/labels.csv \\
         --decisions pipeline/decisions_my_dataset/labels --out-csv data/processed/labels_my_dataset.csv
 """
 

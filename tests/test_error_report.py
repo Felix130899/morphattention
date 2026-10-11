@@ -1,4 +1,4 @@
-"""Unit tests for scripts/error_report.py.
+"""Unit tests for scripts/review/error_report.py.
 
 Runs under pytest or directly: python tests/test_error_report.py
 """
@@ -9,7 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 import error_report as er  # noqa: E402
 import review_masks as rm  # noqa: E402

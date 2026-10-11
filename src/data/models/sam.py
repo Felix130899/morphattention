@@ -1,6 +1,6 @@
 """Segment Anything (SAM ViT-L) loading and inference helpers.
 
-Run scripts/download_sam.py once after building the image to cache the
+Run scripts/setup/download_sam.py once after building the image to cache the
 checkpoint under data/model_cache/. load_sam() below forces Hugging Face Hub offline mode
 before loading, so this code path can only ever use that local cache and
 can never reach out to the network - no image data or metadata can leave

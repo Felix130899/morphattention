@@ -1,7 +1,7 @@
 """Smoke test for the Grounding DINO integration.
 
 Verifies the model loads and runs inference, and that no network access is
-attempted while doing so (run scripts/download_dino.py first to populate the
+attempted while doing so (run scripts/setup/download_dino.py first to populate the
 local cache). Requires PYTHONPATH=/workspace/src (set in the Dockerfile).
 """
 

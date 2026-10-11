@@ -19,7 +19,7 @@ decisions (e.g. fin_cut / ok in a dev compare). Images whose raw file no
 longer exists (the "Kopie" duplicates deleted on 2026-10-01) are counted in
 the header, not listed.
 
-    python scripts/export_reviews.py \\
+    python scripts/review/export_reviews.py \\
         --review-dir data/processed/segmented/D_ruleB_2026-10-09/Röntgen/review_random_seed3 \\
         --out pipeline/decisions/reviews/D_ruleB_Röntgen_random_seed3.tsv
 
@@ -34,6 +34,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pipeline"))  # split_specimens
 from review_masks import load_decisions  # noqa: E402
 from split_specimens import REPO_ROOT, file_sha256, resolve  # noqa: E402
 

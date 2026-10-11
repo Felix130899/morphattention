@@ -1,4 +1,4 @@
-"""Unit tests for the variant construction in scripts/margin_ring_test.py.
+"""Unit tests for the variant construction in experiments/2026-10-01-margin-ring-test/margin_ring_test.py.
 
 Synthetic images only - no model is loaded, so this runs in seconds.
 Requires PYTHONPATH=/workspace/src (set in the Dockerfile). Runs under
@@ -10,7 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "experiments" / "2026-10-01-margin-ring-test"))
 
 import margin_ring_test as rt  # noqa: E402
 

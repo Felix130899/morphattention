@@ -1,4 +1,4 @@
-"""Unit tests for the label decisions in scripts/extract_labels.py.
+"""Unit tests for the label decisions in scripts/pipeline/extract_labels.py.
 
 All catalog numbers here are made up. Runs under pytest or directly:
 python tests/test_extract_labels.py
@@ -9,7 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 import extract_labels as el  # noqa: E402
 

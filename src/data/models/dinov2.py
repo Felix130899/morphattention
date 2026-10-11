@@ -1,7 +1,7 @@
 """DINOv2 (self-supervised ViT) loading helpers, used as a frozen feature
-extractor (e.g. scripts/margin_ring_test.py).
+extractor (e.g. experiments/2026-10-01-margin-ring-test/margin_ring_test.py).
 
-Run scripts/download_dinov2.py once after building the image to cache the
+Run scripts/setup/download_dinov2.py once after building the image to cache the
 checkpoint under data/model_cache/. load_dinov2() below forces Hugging Face
 Hub offline mode before loading, so this code path can only ever use that
 local cache and can never reach out to the network - no image data or

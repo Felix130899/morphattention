@@ -1,4 +1,4 @@
-"""Unit tests for scripts/compare_report.py.
+"""Unit tests for scripts/review/compare_report.py.
 
 Runs under pytest or directly: python tests/test_compare_report.py
 """
@@ -10,7 +10,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 import compare_report as cr  # noqa: E402
 import review_masks as rm  # noqa: E402
@@ -89,7 +89,7 @@ def test_page_is_valid_offline_and_has_no_file_names():
         tmp = Path(tmp)
         stats = [cr.domain_stats(make_compare(tmp / d, d, changed=(60, 1000)), "B", "D", labels=LABELS)
                  for d in ("full_body", "Röntgen")]
-        page = cr.render(stats, THESIS, "B", "D", "2026-10-05", "python scripts/compare_report.py ...")
+        page = cr.render(stats, THESIS, "B", "D", "2026-10-05", "python scripts/review/compare_report.py ...")
         for svg in re.findall(r"<svg.*?</svg>", page, re.S):
             ET.fromstring(svg)  # well-formed, e.g. "p < 0.001" escaped
         assert "NMW" not in page and "_WEB" not in page

@@ -1,5 +1,5 @@
 """Unit tests for the decision bookkeeping and blind compare mode in
-scripts/review_masks.py.
+scripts/review/review_masks.py.
 
 One test starts the HTTP handler on a random 127.0.0.1 port to check that
 nothing run-specific is served in compare mode. Runs under pytest or
@@ -16,7 +16,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 import review_masks as rm  # noqa: E402
 

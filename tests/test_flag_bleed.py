@@ -1,4 +1,4 @@
-"""Unit tests for scripts/flag_bleed.py. Runs under pytest or directly:
+"""Unit tests for scripts/review/flag_bleed.py. Runs under pytest or directly:
 python tests/test_flag_bleed.py
 """
 
@@ -7,7 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 import flag_bleed as fb  # noqa: E402
 

@@ -15,7 +15,7 @@
 #      mv mask_drops_DOMAIN.tsv mask_drops_<domain>.tsv (header only = no decisions)
 #
 # The mask review + error report are not in it: they are the human step between
-# "segment" and "merge" (scripts/review_masks.py, scripts/error_report.py). Their
+# "segment" and "merge" (scripts/review/review_masks.py, scripts/review/error_report.py). Their
 # outcome comes back as rows in the decision files, or as a changed setting below
 # and a rerun under a new name.
 
@@ -33,11 +33,11 @@ decisions_dir: pipeline/decisions_my_dataset   # your copy of pipeline/decisions
 hash_cache: data/processed/sha256_cache.json
 
 # Where the labels come from (step "labels"):
-#   source: csv            your own CSV, one row per image (scripts/import_labels.py):
+#   source: csv            your own CSV, one row per image (scripts/pipeline/import_labels.py):
 #                          file_name (relative to raw_dir, e.g. photos/a.jpg), the
 #                          specimen column, and your label columns (e.g. species, origin)
 #   source: nhm_filenames  the thesis route: labels parsed from NHM Wien file names
-#                          (scripts/extract_labels.py, see config_thesis_nhm.yaml)
+#                          (scripts/pipeline/extract_labels.py, see config_thesis_nhm.yaml)
 # Fixes to messy labels go into <decisions_dir>/labels/value_renames.tsv and
 # image_fixes.tsv (pipeline/decisions_template/README.md), not into the CSV,
 # so every change stays visible.
@@ -48,7 +48,7 @@ labels:
                                 # stay in one split. "none" only if you have no specimen information: every
                                 # image is then its own specimen, and the split warns about it
 
-# segment_fish.py settings for every domain (python scripts/segment_fish.py --help
+# segment_fish.py settings for every domain (python scripts/pipeline/segment_fish.py --help
 # has the details). Detection first, then the mask fixes, all off here; the
 # value the thesis used is behind "thesis". Switch one fix on at a time, rerun
 # under a new name and compare the two runs in the review, so you know which
@@ -92,8 +92,8 @@ split:
 # Footer line of the review reports, e.g. image source and licence (null = none).
 attribution: null
 
-# Mask review (scripts/review_masks.py) and its reports (scripts/error_report.py,
-# scripts/compare_report.py).
+# Mask review (scripts/review/review_masks.py) and its reports (scripts/review/error_report.py,
+# scripts/review/compare_report.py).
 #   categories  error types, keys 1-9 on the review page in this order (max 9).
 #               Name them once and keep them: the names go into the recorded
 #               decisions, and a started review refuses a changed list. Add your

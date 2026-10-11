@@ -8,7 +8,7 @@
 # decisions); what each setting does is explained there.
 #
 # The mask review + error report are not in it: they are the human step between
-# "segment" and "merge" (scripts/review_masks.py, scripts/error_report.py), and
+# "segment" and "merge" (scripts/review/review_masks.py, scripts/review/error_report.py), and
 # their outcome comes back as files in decisions_dir.
 
 # Run name. Outputs under processed_dir:
@@ -24,7 +24,7 @@ processed_dir: data/processed
 decisions_dir: pipeline/decisions      # tracked human decisions, keyed by image SHA-256
 hash_cache: data/processed/sha256_cache.json
 
-# Labels parsed from the NHM Wien file names (scripts/extract_labels.py) with
+# Labels parsed from the NHM Wien file names (scripts/pipeline/extract_labels.py) with
 # decisions_dir/labels/{genus_spelling,catalog_conflicts,needs_review}.tsv;
 # specimens = NMW catalog numbers.
 labels:
@@ -65,8 +65,8 @@ split:
 # Footer line of the review reports.
 attribution: "Images: Naturhistorisches Museum Wien (NHM Wien), Fish Collection. Internal report, not for publication."
 
-# Mask review (scripts/review_masks.py) and its reports (scripts/error_report.py,
-# scripts/compare_report.py). The six categories of every thesis review, keys
+# Mask review (scripts/review/review_masks.py) and its reports (scripts/review/error_report.py,
+# scripts/review/compare_report.py). The six categories of every thesis review, keys
 # 1-6 in this order; their names are in the recorded decisions, so never rename
 # them. "fixes": the segment setting to change if a category has to come down
 # (evidence: vault experiments/mask-quality-history).

@@ -99,11 +99,11 @@ thresholds.
 
 Run inside the container, e.g.:
 
-    docker compose run --rm vit-project python scripts/segment_fish.py \
+    docker compose run --rm vit-project python scripts/pipeline/segment_fish.py \
         --raw-dir /workspace/data/raw/NHM_datensatz/full_body
-    docker compose run --rm vit-project python scripts/segment_fish.py \
+    docker compose run --rm vit-project python scripts/pipeline/segment_fish.py \
         --raw-dir /workspace/data/raw/NHM_datensatz/Röntgen --bleed-max-box-edge 0.3 --resume
-    docker compose run --rm vit-project python scripts/segment_fish.py \
+    docker compose run --rm vit-project python scripts/pipeline/segment_fish.py \
         --raw-dir /workspace/data/raw/NHM_datensatz/full_body \
         --image-list dev_set.txt --mask-threshold -2 --margin-frac 0.03 \
         --out-dir /workspace/data/processed/segmented/dev_t-2_m0.03
@@ -133,7 +133,7 @@ Image.MAX_IMAGE_PIXELS = None
 # Pillow can decode all of these; we just filter the directory walk by them.
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Distinct overlay colours, cycled per instance.
 PALETTE = [

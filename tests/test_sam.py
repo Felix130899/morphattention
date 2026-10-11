@@ -1,7 +1,7 @@
 """Smoke test for the SAM ViT-L integration.
 
 Verifies the model loads and runs inference, and that no network access is
-attempted while doing so (run scripts/download_sam.py first to populate the
+attempted while doing so (run scripts/setup/download_sam.py first to populate the
 local cache). Requires PYTHONPATH=/workspace/src (set in the Dockerfile).
 """
 
@@ -14,7 +14,7 @@ from PIL import Image
 
 from data.models.sam import load_sam, segment
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 
 _REAL_CONNECT = socket.socket.connect

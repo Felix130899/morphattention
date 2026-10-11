@@ -68,7 +68,7 @@ the column name of the class, e.g. genus / genus_evaluated:
                        right is a naming decision)
     run_config.json    inputs (+ sha256 of labels.csv), settings, counts, git state
 
-    python scripts/split_specimens.py \\
+    python scripts/pipeline/split_specimens.py \\
         --labels data/processed/labels.csv \\
         --segmented data/processed/segmented/B_merged_2026-10-03 \\
         --out data/processed/split/B_merged_2026-10-03_seed0
@@ -92,7 +92,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from segment_fish import git_state  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SPLITS = ("train", "val", "test")
 MAX_RANGE = 200  # longest catalog range accepted; the data's longest is 86
 CATALOG_RE = re.compile(r"_(?:NMW|MNW)_?(\d+)((?:[-,](?:NMW|MNW)?\d+)*)")

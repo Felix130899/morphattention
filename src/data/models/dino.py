@@ -1,7 +1,7 @@
 """Grounding DINO (zero-shot text-prompted object detection) loading and
 inference helpers.
 
-Run scripts/download_dino.py once after building the image to cache the
+Run scripts/setup/download_dino.py once after building the image to cache the
 checkpoint under data/model_cache/. load_dino() below forces Hugging Face Hub
 offline mode before loading, so this code path can only ever use that local
 cache and can never reach out to the network - no image data or metadata can

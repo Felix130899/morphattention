@@ -16,8 +16,8 @@ Writes ``<run-dir>/suspect_bleed.txt`` (file names, highest coverage first;
 usable as ``review_masks.py --image-list``) and ``suspect_bleed.csv``
 (file name, coverage, instances, flags).
 
-    python scripts/flag_bleed.py --run-dir data/processed/segmented/B_full_2026-10-01/full_body
-    python scripts/review_masks.py --run-dir data/processed/segmented/B_full_2026-10-01/full_body \\
+    python scripts/review/flag_bleed.py --run-dir data/processed/segmented/B_full_2026-10-01/full_body
+    python scripts/review/review_masks.py --run-dir data/processed/segmented/B_full_2026-10-01/full_body \\
         --image-list data/processed/segmented/B_full_2026-10-01/full_body/suspect_bleed.txt
 """
 

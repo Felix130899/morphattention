@@ -10,12 +10,12 @@ bytes**, never by file name: NHM file names contain catalog numbers, which stay 
 
 | File | Read by | Content |
 |---|---|---|
-| `mask_drops_full_body.tsv`, `mask_drops_Röntgen.tsv` | `scripts/merge_runs.py --drop-sha` | images dropped after the mask reviews, with the reason |
-| `labels/genus_spelling.tsv` | `scripts/extract_labels.py --decisions` | genus spellings merged (decision `accept`; empty = kept apart) |
+| `mask_drops_full_body.tsv`, `mask_drops_Röntgen.tsv` | `scripts/pipeline/merge_runs.py --drop-sha` | images dropped after the mask reviews, with the reason |
+| `labels/genus_spelling.tsv` | `scripts/pipeline/extract_labels.py --decisions` | genus spellings merged (decision `accept`; empty = kept apart) |
 | `labels/catalog_conflicts.tsv` | same | catalogs whose images carry different genera: `rename A -> B` (everywhere), `rename in catalog A -> B`, `drop A` (in those catalogs), `keep` |
 | `labels/needs_review.tsv` | same | file names the parser could not read cleanly: `set catalog NMW<number>`, `keep, own specimen group XYZ<number>`, `drop`; `set species <name>` after `; ` when the parser found no species |
 
-`reviews/*.tsv` (written by `scripts/export_reviews.py`) are the **records** behind the mask numbers: the final
+`reviews/*.tsv` (written by `scripts/review/export_reviews.py`) are the **records** behind the mask numbers: the final
 verdict per image of every review session (random samples seed 0–3, blind compares, first reviews), in the order
 shown, with a header saying which runs were judged. The pipeline does not read them; they are the tracked source of
 the error rates in the thesis.

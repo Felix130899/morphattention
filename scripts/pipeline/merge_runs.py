@@ -41,18 +41,18 @@ Output (same layout as segment_fish.py, so review_masks.py etc. work on it):
     merged_from_patch.txt   the taken file names
     dropped.txt         file_name<TAB>reason of every dropped image
 
-    python scripts/merge_runs.py \\
+    python scripts/pipeline/merge_runs.py \\
         --base data/processed/segmented/B_full_2026-10-01/full_body \\
         --patch data/processed/segmented/B_bleedfix/full_body \\
         --take-ok-from data/processed/segmented/B_bleedfix/review_compare_full_body:bleedfix \\
         --out data/processed/segmented/B_merged_2026-10-03/full_body
 
-    python scripts/merge_runs.py \\
+    python scripts/pipeline/merge_runs.py \\
         --base data/processed/segmented/D_full_2026-10-05/full_body \\
         --drop data/processed/segmented/B_merged_2026-10-03/full_body/dropped.txt \\
         --out data/processed/segmented/D_merged_2026-10-05/full_body
 
-    python scripts/merge_runs.py \\
+    python scripts/pipeline/merge_runs.py \\
         --base data/processed/segmented/D_full_2026-10-05/Röntgen \\
         --drop-sha pipeline/decisions/mask_drops_Röntgen.tsv --qa-rule B \\
         --out data/processed/segmented/D_final/Röntgen
@@ -68,6 +68,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "review"))  # review_masks
 from review_masks import load_decisions  # noqa: E402
 from segment_fish import git_state, parse_image_list, print_summary, write_outputs  # noqa: E402
 from split_specimens import file_sha256, resolve  # noqa: E402

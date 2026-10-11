@@ -33,12 +33,12 @@ the footer line from ``--config`` (default pipeline/config.yaml). The page
 always has the same sections in the same order (SECTIONS); a section that does
 not apply to the mode says so in one line.
 
-    python scripts/compare_report.py --mode random --before B --after E \\
+    python scripts/review/compare_report.py --mode random --before B --after E \\
         --review-dir data/processed/segmented/review_compare_BE_Röntgen_seed2 \\
         --sample data/processed/segmented/E_merged_<DATE>/Röntgen/sample_seed2/sample.json \\
         --config pipeline/config_thesis_nhm.yaml --out vault/thesis-log/experiments/<DATE>-compare-B-vs-E.html
 
-    python scripts/compare_report.py --before B --after D \\
+    python scripts/review/compare_report.py --before B --after D \\
         --review-dir data/processed/segmented/review_compare_BD_full_body \\
         --review-dir data/processed/segmented/review_compare_BD_Röntgen \\
         --baseline data/processed/segmented/B_merged_2026-10-03/full_body/review_random_seed0 \\
@@ -273,7 +273,7 @@ def scaling_section(stats, before, after, mode):
         why = "random sample of the whole set" if mode == "random" else "chosen list, not a random sample"
         return f"<p>Not applicable: mode {mode} ({why}).</p>"
     if not all("changed" in s for s in stats):
-        return (f"<p>Not applicable: no <code>changed_vs_{esc(before)}.json</code> (scripts/mask_changes.py) "
+        return (f"<p>Not applicable: no <code>changed_vs_{esc(before)}.json</code> (scripts/review/mask_changes.py) "
                 "in the after run of every domain.</p>")
     rows = []
     for s in stats:
@@ -491,7 +491,7 @@ def main():
     for s in stats:
         if s["n"] < s["images"]:
             print(f'Note: {s["label"]}: only {s["n"]} of {s["images"]} images judged in both runs')
-    cmd = " \\\n    ".join([f"python scripts/compare_report.py --mode {args.mode} --before {args.before} --after {args.after}"]
+    cmd = " \\\n    ".join([f"python scripts/review/compare_report.py --mode {args.mode} --before {args.before} --after {args.after}"]
                            + [f"--review-dir {d}" for d in args.review_dir]
                            + [f"--baseline {b}" for b in args.baseline or []]
                            + [f"--sample {smp}" for smp in args.sample or []]

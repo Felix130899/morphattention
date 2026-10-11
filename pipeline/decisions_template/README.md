@@ -42,7 +42,7 @@ photos/IMG_0003.jpg,F-18,Salmo truta,river
 ```
 
 - `file_name` is relative to `raw_dir`; the first folder is the domain. Every image under `raw_dir` needs exactly
-  one row and every row an image, otherwise `scripts/import_labels.py` stops and lists the mismatches.
+  one row and every row an image, otherwise `scripts/pipeline/import_labels.py` stops and lists the mismatches.
 - The specimen column (`labels.specimen`, here `specimen`) says which images show the same physical object; they
   always land in the same split. Without specimen information set `specimen: none`: every image is then its own
   specimen, and the split warns that images of one specimen can be in train and test.
@@ -59,7 +59,7 @@ Byte-identical images (same SHA-256) are kept once, under the alphabetically fir
 
 ## NHM file names (`labels.source: nhm_filenames`)
 
-The thesis route: `scripts/extract_labels.py` parses `Genus_species_NMW12345….jpg` (NHM Wien) and groups specimens
+The thesis route: `scripts/pipeline/extract_labels.py` parses `Genus_species_NMW12345….jpg` (NHM Wien) and groups specimens
 by NMW catalog number. A worked example of messy labels fixed transparently; the filled-in sheets are in
 `pipeline/decisions/labels/`.
 

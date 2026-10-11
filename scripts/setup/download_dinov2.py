@@ -3,7 +3,7 @@
 Run this once after building the image (it needs network access to fetch
 public model weights from the Hugging Face Hub):
 
-    docker compose run --rm vit-project python scripts/download_dinov2.py
+    docker compose run --rm vit-project python scripts/setup/download_dinov2.py
 
 The cache lives under data/model_cache/ (HF_HOME, set in the Dockerfile),
 which is bind-mounted from the host and gitignored, so the weights persist

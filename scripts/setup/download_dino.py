@@ -1,10 +1,10 @@
 """One-time download of the Grounding DINO checkpoint into the local cache.
 
-Mirrors scripts/download_sam.py: run this once after building the image (it
+Mirrors scripts/setup/download_sam.py: run this once after building the image (it
 needs network access to fetch public model weights from the Hugging Face
 Hub):
 
-    docker compose run --rm vit-project python scripts/download_dino.py
+    docker compose run --rm vit-project python scripts/setup/download_dino.py
 
 The cache lives under data/model_cache/ (HF_HOME, set in the Dockerfile),
 which is bind-mounted from the host and gitignored, so the weights persist

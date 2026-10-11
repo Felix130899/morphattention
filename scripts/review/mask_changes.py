@@ -15,7 +15,7 @@ Writes into ``--after`` (nothing else is changed):
     changed_vs_<name>_pick<N>_seed<S>.txt   with --pick: N seeded random changed images,
                                             for a blind review_masks.py --compare
 
-    python scripts/mask_changes.py --name B \\
+    python scripts/review/mask_changes.py --name B \\
         --before data/processed/segmented/B_merged_2026-10-03/full_body \\
         --after data/processed/segmented/D_merged_2026-10-05/full_body --pick 100 --seed 0
 """

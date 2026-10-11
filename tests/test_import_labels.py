@@ -1,4 +1,4 @@
-"""Tests for scripts/import_labels.py (own labels CSV) and the split + manifest on its output.
+"""Tests for scripts/pipeline/import_labels.py (own labels CSV) and the split + manifest on its output.
 
 Runs under pytest or directly: python tests/test_import_labels.py
 """
@@ -12,13 +12,13 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 ENV = {**os.environ, "PYTHONPATH": str(REPO / "src")}
 
 
 def run(script, *args):
-    return subprocess.run([sys.executable, str(REPO / "scripts" / script), *map(str, args)],
+    return subprocess.run([sys.executable, str(REPO / "scripts" / "pipeline" / script), *map(str, args)],
                           capture_output=True, text=True, env=ENV)
 
 

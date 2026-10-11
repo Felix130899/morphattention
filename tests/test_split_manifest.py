@@ -1,4 +1,4 @@
-"""Unit tests for scripts/split_specimens.py and scripts/build_manifest.py.
+"""Unit tests for scripts/pipeline/split_specimens.py and scripts/pipeline/build_manifest.py.
 
 All catalog numbers here are made up. Runs under pytest or directly:
 python tests/test_split_manifest.py
@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 import build_manifest as bm  # noqa: E402
 import split_specimens as ss  # noqa: E402
@@ -178,7 +178,7 @@ def test_manifest_columns_follow_the_class():
 
 def run_split(labels_csv, seg, out, cls):
     env = {**os.environ, "PYTHONPATH": str(REPO / "src")}
-    return subprocess.run([sys.executable, str(REPO / "scripts" / "split_specimens.py"), "--labels", str(labels_csv),
+    return subprocess.run([sys.executable, str(REPO / "scripts" / "pipeline" / "split_specimens.py"), "--labels", str(labels_csv),
                            "--segmented", str(seg), "--out", str(out), "--class", cls, "--min-specimens", "3",
                            "--hash-cache", str(out.parent / f"cache_{cls}.json")],
                           capture_output=True, text=True, env=env)

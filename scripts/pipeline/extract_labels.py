@@ -28,8 +28,8 @@ cross-check labels.csv against the image set.
 
 Run inside the container, e.g.:
 
-    docker compose run --rm vit-project python scripts/extract_labels.py
-    docker compose run --rm vit-project python scripts/extract_labels.py \
+    docker compose run --rm vit-project python scripts/pipeline/extract_labels.py
+    docker compose run --rm vit-project python scripts/pipeline/extract_labels.py \
         --raw-dir /workspace/data/raw/nmw_specimens \
         --out-csv /workspace/data/processed/labels.csv
 
@@ -61,7 +61,7 @@ Two columns are added: ``label_change`` (what was changed) and
 ``label_drop`` (why the image is not used; empty = used). Dropped rows stay
 in the CSV, so the row count still matches the image count.
 
-    python scripts/extract_labels.py --raw-dir data/raw/NHM_datensatz \\
+    python scripts/pipeline/extract_labels.py --raw-dir data/raw/NHM_datensatz \\
         --decisions pipeline/decisions/labels --out-csv data/processed/labels_final.csv
 """
 

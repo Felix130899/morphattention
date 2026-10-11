@@ -39,11 +39,11 @@ Verdict (per domain, from ``evaluate``):
 
 Steps (``data/processed/ring_test/run_ring_test.sh`` runs them all):
 
-    python scripts/margin_ring_test.py select
-    python scripts/segment_fish.py ... --image-list data/processed/ring_test/photos.txt \\
+    python experiments/2026-10-01-margin-ring-test/margin_ring_test.py select
+    python scripts/pipeline/segment_fish.py ... --image-list data/processed/ring_test/photos.txt \\
         --mask-threshold -1 --min-component-frac 0.01        # setting B, no margin
-    python scripts/margin_ring_test.py features --domain photos --run-dir <B run dir>
-    python scripts/margin_ring_test.py evaluate --domain photos
+    python experiments/2026-10-01-margin-ring-test/margin_ring_test.py features --domain photos --run-dir <B run dir>
+    python experiments/2026-10-01-margin-ring-test/margin_ring_test.py evaluate --domain photos
 
 The probe is linear on frozen features, so it is a lower bound on what a
 fine-tuned ViT could pick up; the raw-image Clever Hans baseline and LRP on
@@ -61,7 +61,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "pipeline"))  # segment_fish
 from segment_fish import grow_margins  # noqa: E402
 
 Image.MAX_IMAGE_PIXELS = None
@@ -317,7 +317,7 @@ def evaluate(args):
     keep = np.ones(len(data["genus"]), bool)
     n_excluded = 0
     if args.exclude is not None:
-        # robustness checks, e.g. without suspected whole-background bleed (scripts/flag_bleed.py)
+        # robustness checks, e.g. without suspected whole-background bleed (scripts/review/flag_bleed.py)
         drop = {l.strip() for l in args.exclude.read_text(encoding="utf-8").splitlines() if l.strip()}
         keep = ~np.isin(data["file_names"], list(drop))
         n_excluded = int((~keep).sum())

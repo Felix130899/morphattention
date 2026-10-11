@@ -33,7 +33,7 @@ modification time, so a rerun only hashes new or changed files.
 
 Output (``--out``, in gitignored data/): manifest.csv, run_config.json
 
-    python scripts/build_manifest.py \\
+    python scripts/pipeline/build_manifest.py \\
         --segmented data/processed/segmented/B_merged_2026-10-03 \\
         --split-dir data/processed/split/B_merged_2026-10-03_seed0 \\
         --out data/processed/manifest/B_merged_2026-10-03_seed0

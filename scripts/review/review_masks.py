@@ -42,9 +42,9 @@ and are not shown - they are already listed in ``<run-dir>/skipped.txt``.
 The image list is read once at startup, so restart to pick up images a still
 running segmentation has added since.
 
-    python scripts/review_masks.py --run-dir data/processed/segmented/my_run/photos --reviewer Ana
-    python scripts/review_masks.py --run-dir data/processed/segmented/my_run/photos --flagged-only
-    python scripts/review_masks.py --run-dir data/processed/segmented/my_run/photos --image-list dev_set.txt
+    python scripts/review/review_masks.py --run-dir data/processed/segmented/my_run/photos --reviewer Ana
+    python scripts/review/review_masks.py --run-dir data/processed/segmented/my_run/photos --flagged-only
+    python scripts/review/review_masks.py --run-dir data/processed/segmented/my_run/photos --image-list dev_set.txt
 
 The thesis reviews (NHM Wien) were judged with the thesis categories, so they
 resume only with ``--config pipeline/config_thesis_nhm.yaml``.
@@ -68,13 +68,13 @@ served by item index. Results go to ``--review-dir`` only, never into a run:
     summary.csv       per-run counts, written by --summary
     disagreements.csv images where the runs' verdicts/categories differ (--summary)
 
-    python scripts/review_masks.py \\
+    python scripts/review/review_masks.py \\
         --compare base=data/processed/segmented/full_body \\
         --compare thr05=data/processed/segmented/dev_thr05 \\
         --compare thr07=data/processed/segmented/dev_thr07 \\
         --compare marg=data/processed/segmented/dev_margin \\
         --image-list dev_set.txt --review-dir data/processed/segmented/review_dev --seed 0 --reviewer Ana
-    python scripts/review_masks.py --summary --review-dir data/processed/segmented/review_dev
+    python scripts/review/review_masks.py --summary --review-dir data/processed/segmented/review_dev
 
 ``--summary`` (no server) prints per run: items, judged, ok, fix, drop,
 fix_rate = fix / (ok + fix) - drops are about the image, not the mask, so
@@ -102,12 +102,12 @@ population before the shuffle, e.g. the images of an earlier sample that were
 used for tuning. sample.json stores the list's sha256 and size; a resume with
 another (or no) exclude list is refused, so pass the same ``--exclude`` again.
 
-    python scripts/review_masks.py --run-dir data/processed/segmented/B_merged_2026-10-03/Röntgen \\
+    python scripts/review/review_masks.py --run-dir data/processed/segmented/B_merged_2026-10-03/Röntgen \\
         --sample 300 --seed 0 --config pipeline/config_thesis_nhm.yaml --reviewer Neo
-    python scripts/review_masks.py --run-dir data/processed/segmented/D_merged_2026-10-05/Röntgen \\
+    python scripts/review/review_masks.py --run-dir data/processed/segmented/D_merged_2026-10-05/Röntgen \\
         --sample 300 --seed 1 --config pipeline/config_thesis_nhm.yaml --reviewer Neo \\
         --exclude data/processed/segmented/B_merged_2026-10-03/Röntgen/review_random_seed0/sample_names.txt
-    python scripts/review_masks.py --summary \\
+    python scripts/review/review_masks.py --summary \\
         --review-dir data/processed/segmented/B_merged_2026-10-03/Röntgen/review_random_seed0
 
 ``--summary`` on a sample review dir prints judged, ok, fix, drop, the error
@@ -133,7 +133,7 @@ import yaml
 VERDICTS = ("ok", "fix", "drop")
 ACTIONS = ("ok", "fix", "drop", "clear", "toggle")
 WORKSPACE = Path("/workspace")
-DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "pipeline" / "config.yaml"
+DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "pipeline" / "config.yaml"
 MAX_CATEGORIES = 9  # number keys 1-9 on the page
 CATEGORY_NAME = re.compile(r"[a-z][a-z0-9_]*")
 

@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
 # of baking model weights into the image. data/ already lives on the host
 # (see docker-compose.yml volume mount) and is gitignored, so weights persist
 # across container rebuilds without bloating the image or the git repo.
-# Run scripts/download_sam.py once after first build to populate it.
+# Run scripts/setup/download_sam.py once after first build to populate it.
 ENV HF_HOME=/workspace/data/model_cache/huggingface
 ENV HF_HUB_DISABLE_TELEMETRY=1
 ENV PYTHONPATH=/workspace/src

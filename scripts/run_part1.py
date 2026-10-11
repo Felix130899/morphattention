@@ -35,7 +35,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = REPO_ROOT / "scripts"
+SCRIPTS = REPO_ROOT / "scripts" / "pipeline"  # the steps
 TEMPLATE = Path("pipeline") / "decisions_template"
 STEPS = ("labels", "segment", "merge", "split", "manifest")
 LABEL_SHEETS = {"csv": ("value_renames.tsv", "image_fixes.tsv"),  # decision sheets each labels.source reads

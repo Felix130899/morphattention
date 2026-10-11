@@ -22,7 +22,7 @@ line, relative to the domain's raw dir, as used by ``--image-list``) and
 ``devset.csv`` (file name, domain, stratum, species, catalog number,
 instances, flags).
 
-    python scripts/make_devset.py
+    python experiments/2026-10-01-devset/make_devset.py
 """
 
 import argparse

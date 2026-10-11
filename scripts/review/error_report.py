@@ -12,7 +12,7 @@ category advice ("fixes"), the limit (review.max_rate), extra caveats, the
 domain labels and the footer line come from ``--config``
 (default pipeline/config.yaml).
 
-    python scripts/error_report.py --config pipeline/config_thesis_nhm.yaml \\
+    python scripts/review/error_report.py --config pipeline/config_thesis_nhm.yaml \\
         --review-dir data/processed/segmented/B_merged_2026-10-03/full_body/review_random_seed0 \\
         --review-dir data/processed/segmented/B_merged_2026-10-03/Röntgen/review_random_seed0 \\
         --out vault/thesis-log/experiments/2026-10-04-mask-error-rate.html
@@ -472,7 +472,7 @@ def main():
         stats = [domain_stats(d, max_rate, cfg["labels"]) for d in args.review_dir]
     except ValueError as e:
         raise SystemExit(str(e))
-    cmd = " \\\n    ".join([f"python scripts/error_report.py --config {args.config}"]
+    cmd = " \\\n    ".join([f"python scripts/review/error_report.py --config {args.config}"]
                            + [f"--review-dir {d}" for d in args.review_dir]
                            + ([f"--max-rate {args.max_rate}"] if args.max_rate is not None else [])
                            + [f"--out {args.out}"])

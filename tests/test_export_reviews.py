@@ -1,4 +1,4 @@
-"""Tests for scripts/export_reviews.py on tiny fake review dirs (made-up names).
+"""Tests for scripts/review/export_reviews.py on tiny fake review dirs (made-up names).
 
 Runs under pytest or directly: python tests/test_export_reviews.py
 """
@@ -8,7 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 import export_reviews as er  # noqa: E402
 

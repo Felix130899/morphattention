@@ -1,4 +1,4 @@
-"""Unit tests for the per-instance rules in scripts/segment_fish.py.
+"""Unit tests for the per-instance rules in scripts/pipeline/segment_fish.py.
 
 Synthetic masks only - no model is loaded, so this runs in seconds.
 Requires PYTHONPATH=/workspace/src (set in the Dockerfile). Runs under
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts" / d) for d in ("", "pipeline", "review")]
 
 import segment_fish as sf  # noqa: E402
 
