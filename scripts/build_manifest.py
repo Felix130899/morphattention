@@ -1,7 +1,7 @@
 """Write the dataset manifest: one CSV row per image, the input for training.
 
 Every row of labels.csv is in it, also dropped and skipped images, so it is
-visible why an image is not used. Columns:
+visible why an image is not used. Columns with NHM labels (extract_labels.py):
 
     file_name        <domain>/<name>, as in labels.csv
     sha256           of the raw image bytes; the key git-tracked files may use
@@ -21,6 +21,11 @@ visible why an image is not used. Columns:
     needs_review     from labels.csv
     split            train / val / test / train_only, "none" when not usable
     <class>_evaluated  the image's class is evaluated in this domain (e.g. genus_evaluated)
+
+With own labels (import_labels.py, labels.csv has specimen_id): file_name,
+sha256, domain, specimen_id and every label column of the CSV in its order,
+the class column if it is derived (genus, binomial), then specimen ... split,
+<class>_evaluated as above (no catalog_number, needs_review).
 
 The 3 % mask margin is not applied here; training applies it when building
 the images. SHA-256 sums are cached in ``--hash-cache`` by path, size and
@@ -45,18 +50,25 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from segment_fish import git_state  # noqa: E402
-from split_specimens import (catalog_keys, class_of, file_sha256, genus_of, load_status, raw_dirs_of,  # noqa: E402
-                             resolve)
+from split_specimens import (class_of, file_sha256, genus_of, load_status, raw_dirs_of, resolve,  # noqa: E402
+                             specimen_keys)
+
+NOT_LABELS = ("file_name", "photo_type", "label_change", "label_drop")  # own labels: columns not copied
 
 
-def columns(class_name):
-    """Manifest columns; the class gets its own column unless it is species or genus."""
-    extra = [] if class_name in ("species", "genus") else [class_name]
-    return ["file_name", "sha256", "domain", "species", "genus", *extra, "catalog_number", "specimen", "mask_path",
-            "n_instances", "status", "reason", "needs_review", "split", f"{class_name}_evaluated"]
+def columns(class_name, label_columns=None):
+    """Manifest columns. NHM labels (``label_columns`` None): fixed, the class gets its own
+    column unless it is species or genus. Own labels: the label columns, plus a derived class."""
+    tail = ["specimen", "mask_path", "n_instances", "status", "reason"]
+    if label_columns is None:
+        extra = [] if class_name in ("species", "genus") else [class_name]
+        return ["file_name", "sha256", "domain", "species", "genus", *extra, "catalog_number", *tail,
+                "needs_review", "split", f"{class_name}_evaluated"]
+    extra = [] if class_name in label_columns else [class_name]
+    return ["file_name", "sha256", "domain", *label_columns, *extra, *tail, "split", f"{class_name}_evaluated"]
 
 
-def build_rows(labels, segmented, split_rows, raw_dirs, hash_cache, class_name="genus"):
+def build_rows(labels, segmented, split_rows, raw_dirs, hash_cache, class_name="genus", own_labels=False):
     status = load_status(segmented, raw_dirs)
     rows = []
     for r in labels:
@@ -68,22 +80,28 @@ def build_rows(labels, segmented, split_rows, raw_dirs, hash_cache, class_name="
             mask_note = f" (mask {state}{': ' + reason if reason else ''})" if state != "ok" else ""
             state, reason = "dropped", r["label_drop"] + mask_note
         elif state == "ok" and s is None:
-            state, reason = "dropped", "no catalog number" if not catalog_keys(r)[0] else f"no {class_name}"
+            no_spec = not specimen_keys(r, own_labels)[0]
+            state, reason = "dropped", (("no specimen id" if own_labels else "no catalog number") if no_spec
+                                        else f"no {class_name}")
         elif state == "ok":
             state = "usable"
         mask = Path(segmented) / domain / "masks" / f"{stem}.png" if state == "usable" else None
         if mask is not None and not resolve(mask).exists():
             raise SystemExit(f"mask missing for a usable image: {mask}")
-        rows.append({
-            "file_name": name, "sha256": file_sha256(raw_dirs[domain] / Path(name).relative_to(domain), hash_cache),
-            "domain": domain, "species": r["species"], "genus": genus_of(r["species"]) if r["species"] else "",
-            "catalog_number": r["catalog_number"], "specimen": s["specimen"] if s else "",
-            "mask_path": str(mask) if mask else "", "n_instances": n_inst if state == "usable" else "",
-            "status": state, "reason": reason, "needs_review": r["needs_review"],
-            "split": s["split"] if s else "none",
-            f"{class_name}_evaluated": s[f"{class_name}_evaluated"] if s else "False"})
-        if class_name not in ("species", "genus"):
-            rows[-1][class_name] = class_of(r, class_name)
+        row = {"file_name": name, "sha256": file_sha256(raw_dirs[domain] / Path(name).relative_to(domain), hash_cache),
+               "domain": domain}
+        if own_labels:
+            row.update({c: v for c, v in r.items() if c not in NOT_LABELS})
+        else:
+            row.update({"species": r["species"], "genus": genus_of(r["species"]) if r["species"] else "",
+                        "catalog_number": r["catalog_number"], "needs_review": r["needs_review"]})
+        row.update({"specimen": s["specimen"] if s else "", "mask_path": str(mask) if mask else "",
+                    "n_instances": n_inst if state == "usable" else "", "status": state, "reason": reason,
+                    "split": s["split"] if s else "none",
+                    f"{class_name}_evaluated": s[f"{class_name}_evaluated"] if s else "False"})
+        if class_name not in row:
+            row[class_name] = class_of(r, class_name)
+        rows.append(row)
     return rows
 
 
@@ -98,7 +116,10 @@ def main():
     args = parser.parse_args()
 
     with open(args.labels, newline="") as f:
-        labels = list(csv.DictReader(f))
+        reader = csv.DictReader(f)
+        labels = list(reader)
+    own_labels = "specimen_id" in (reader.fieldnames or [])
+    label_columns = [c for c in reader.fieldnames if c not in NOT_LABELS] if own_labels else None
     with open(args.split_dir / "split.csv", newline="") as f:
         split_rows = {r["file_name"]: r for r in csv.DictReader(f)}
     split_config = json.loads((args.split_dir / "run_config.json").read_text())
@@ -114,7 +135,7 @@ def main():
     cache = json.loads(args.hash_cache.read_text()) if args.hash_cache.exists() else {}
     n_cached = len(cache)
     try:
-        rows = build_rows(labels, args.segmented, split_rows, raw_dirs, cache, class_name)
+        rows = build_rows(labels, args.segmented, split_rows, raw_dirs, cache, class_name, own_labels)
     finally:
         if len(cache) != n_cached:
             args.hash_cache.parent.mkdir(parents=True, exist_ok=True)
@@ -123,7 +144,7 @@ def main():
     dup = [h for h, n in collections.Counter(r["sha256"] for r in rows).items() if n > 1]
     args.out.mkdir(parents=True, exist_ok=True)
     with open(args.out / "manifest.csv", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=columns(class_name))
+        w = csv.DictWriter(f, fieldnames=columns(class_name, label_columns))
         w.writeheader()
         w.writerows(rows)
     counts = collections.Counter((r["domain"], r["status"], r["split"]) for r in rows)

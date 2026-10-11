@@ -2,7 +2,8 @@
 
 Steps (``--steps``, default all, always in this order):
 
-    labels    extract_labels.py --decisions <decisions>/labels -> labels_<name>.csv
+    labels    labels.source csv: import_labels.py (your CSV) / nhm_filenames:
+              extract_labels.py (NHM file names), with <decisions>/labels -> labels_<name>.csv
     segment   segment_fish.py per domain -> segmented/<name>_full/<domain>
               (always with --resume: a finished run is only re-checked)
     merge     merge_runs.py per domain: --drop-sha <decisions>/mask_drops_<domain>.tsv
@@ -37,7 +38,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "scripts"
 TEMPLATE = Path("pipeline") / "decisions_template"
 STEPS = ("labels", "segment", "merge", "split", "manifest")
-LABEL_SHEETS = ("genus_spelling.tsv", "catalog_conflicts.tsv", "needs_review.tsv")
+LABEL_SHEETS = {"csv": ("value_renames.tsv", "image_fixes.tsv"),  # decision sheets each labels.source reads
+                "nhm_filenames": ("genus_spelling.tsv", "catalog_conflicts.tsv", "needs_review.tsv")}
 
 
 def cli_flags(options):
@@ -77,10 +79,16 @@ def missing_inputs(cfg, steps):
     raw, dec = Path(cfg["raw_dir"]), Path(cfg["decisions_dir"])
     out = []
     if "labels" in steps:
+        lab = cfg.get("labels") or {}
         if not raw.is_dir():
             out.append(f"raw_dir {raw} does not exist")
-        out += [f"{dec / 'labels' / s} missing: copy {TEMPLATE / 'labels' / s}"
-                for s in LABEL_SHEETS if not (dec / "labels" / s).is_file()]
+        if lab.get("source") not in LABEL_SHEETS:
+            out.append(f"labels.source is {lab.get('source')!r}, not one of {sorted(LABEL_SHEETS)}")
+        else:
+            out += [f"{dec / 'labels' / s} missing: copy {TEMPLATE / 'labels' / s}"
+                    for s in LABEL_SHEETS[lab["source"]] if not (dec / "labels" / s).is_file()]
+        if lab.get("source") == "csv" and not Path(lab.get("path") or "").is_file():
+            out.append(f"labels.path {lab.get('path')} (your labels CSV) does not exist")
     for domain in cfg["domains"]:
         if "segment" in steps and not (raw / domain).is_dir():
             out.append(f"{raw / domain} does not exist (domains are the subfolders of raw_dir)")
@@ -95,8 +103,13 @@ def commands(cfg, steps):
     p, dec, raw = paths(cfg), Path(cfg["decisions_dir"]), Path(cfg["raw_dir"])
     cache = ["--hash-cache", str(cfg["hash_cache"])]
     if "labels" in steps:
-        out.append(("labels", [py, str(SCRIPTS / "extract_labels.py"), "--raw-dir", str(raw),
-                               "--decisions", str(dec / "labels"), "--out-csv", str(p["labels"]), *cache], None))
+        lab = cfg.get("labels") or {}
+        if lab.get("source") == "csv":
+            argv = [py, str(SCRIPTS / "import_labels.py"), "--raw-dir", str(raw), "--csv", str(lab.get("path")),
+                    "--specimen", str(lab.get("specimen", "specimen"))]
+        else:
+            argv = [py, str(SCRIPTS / "extract_labels.py"), "--raw-dir", str(raw)]
+        out.append(("labels", argv + ["--decisions", str(dec / "labels"), "--out-csv", str(p["labels"]), *cache], None))
     for domain in cfg["domains"]:
         if "segment" in steps:
             out.append((f"segment {domain}", [py, str(SCRIPTS / "segment_fish.py"), "--raw-dir", str(raw / domain),

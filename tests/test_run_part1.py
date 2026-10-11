@@ -84,23 +84,40 @@ def test_missing_inputs_point_at_the_template():
         tmp = Path(tmp)
         cfg = yaml.safe_load(NEUTRAL.read_text())
         cfg["raw_dir"], cfg["decisions_dir"] = str(tmp / "raw"), str(tmp / "dec")
+        cfg["labels"]["path"] = str(tmp / "raw" / "labels.csv")
         missing = rp.missing_inputs(cfg, rp.STEPS)
-        assert len(missing) == 1 + 3 + 2 and all("template" in m for m in missing if "missing" in m)
+        # raw_dir, the 2 csv-route sheets, the labels CSV, raw_dir/photos, mask_drops_photos.tsv
+        assert len(missing) == 1 + 2 + 1 + 2 and all("template" in m for m in missing if "missing" in m)
+        assert [m for m in missing if "your labels CSV" in m]
         assert rp.missing_inputs(cfg, ["split", "manifest"]) == []
         (tmp / "raw" / "photos").mkdir(parents=True)
+        (tmp / "raw" / "labels.csv").write_text("file_name,specimen\n")
         shutil.copytree(TEMPLATE, tmp / "dec")
         assert [m for m in rp.missing_inputs(cfg, rp.STEPS) if "mask_drops_photos" in m]
         (tmp / "dec" / "mask_drops_DOMAIN.tsv").rename(tmp / "dec" / "mask_drops_photos.tsv")
         assert rp.missing_inputs(cfg, rp.STEPS) == []
+        cfg["labels"]["source"] = "spreadsheet"
+        assert [m for m in rp.missing_inputs(cfg, ["labels"]) if "labels.source" in m]
+
+
+def test_labels_route_follows_the_config():
+    neutral, thesis = yaml.safe_load(NEUTRAL.read_text()), yaml.safe_load(THESIS.read_text())
+    a = rp.commands(neutral, ["labels"])[0][1]
+    assert Path(a[1]).name == "import_labels.py" and ("--csv", neutral["labels"]["path"]) in pairs(a)
+    assert ("--specimen", "specimen") in pairs(a) and ("--decisions", "pipeline/decisions_my_dataset/labels") in pairs(a)
+    b = rp.commands(thesis, ["labels"])[0][1]
+    assert Path(b[1]).name == "extract_labels.py" and "--csv" not in b and ("--decisions", "pipeline/decisions/labels") in pairs(b)
 
 
 def test_template_files_mean_no_decisions():
     import extract_labels as el
     import merge_runs as mr
     assert mr.read_sha_drop_list((TEMPLATE / "mask_drops_DOMAIN.tsv").read_text()) == {}
-    for sheet in rp.LABEL_SHEETS:  # same header as the thesis sheets
+    for sheet in rp.LABEL_SHEETS["nhm_filenames"]:  # same header as the thesis sheets
         assert (TEMPLATE / "labels" / sheet).read_text().splitlines() == \
             (REPO / "pipeline" / "decisions" / "labels" / sheet).read_text().splitlines()[:1]
+    for sheet in rp.LABEL_SHEETS["csv"]:  # header only
+        assert len((TEMPLATE / "labels" / sheet).read_text().splitlines()) == 1
     rows = [{"file_name": f"full_body/Salmo_trutta_NMW1234{i}.jpg", "photo_type": "full_body",
              **el.parse_filename(f"Salmo_trutta_NMW1234{i}")} for i in range(2)]
     done = el.apply_decisions(rows, TEMPLATE / "labels", {r["file_name"]: f"sha{i}" for i, r in enumerate(rows)})

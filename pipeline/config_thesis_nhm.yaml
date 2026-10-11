@@ -24,6 +24,12 @@ processed_dir: data/processed
 decisions_dir: pipeline/decisions      # tracked human decisions, keyed by image SHA-256
 hash_cache: data/processed/sha256_cache.json
 
+# Labels parsed from the NHM Wien file names (scripts/extract_labels.py) with
+# decisions_dir/labels/{genus_spelling,catalog_conflicts,needs_review}.tsv;
+# specimens = NMW catalog numbers.
+labels:
+  source: nhm_filenames
+
 # segment_fish.py settings for every domain: setting D (vault
 # experiments/2026-10-04-random-review-fixes), the same values as
 # segment_fish.py's own defaults, written out so this file is the record.

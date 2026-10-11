@@ -10,7 +10,8 @@
 # Before the first run:
 #   1. put your images under raw_dir, one subfolder per domain (e.g. photos/, xrays/)
 #      and list those subfolders under "domains" below
-#   2. cp -r pipeline/decisions_template <decisions_dir>, then per domain
+#   2. write your labels CSV (block "labels" below)
+#   3. cp -r pipeline/decisions_template <decisions_dir>, then per domain
 #      mv mask_drops_DOMAIN.tsv mask_drops_<domain>.tsv (header only = no decisions)
 #
 # The mask review + error report are not in it: they are the human step between
@@ -30,6 +31,22 @@ raw_dir: data/raw/my_dataset           # one subfolder per domain
 processed_dir: data/processed
 decisions_dir: pipeline/decisions_my_dataset   # your copy of pipeline/decisions_template/
 hash_cache: data/processed/sha256_cache.json
+
+# Where the labels come from (step "labels"):
+#   source: csv            your own CSV, one row per image (scripts/import_labels.py):
+#                          file_name (relative to raw_dir, e.g. photos/a.jpg), the
+#                          specimen column, and your label columns (e.g. species, origin)
+#   source: nhm_filenames  the thesis route: labels parsed from NHM Wien file names
+#                          (scripts/extract_labels.py, see config_thesis_nhm.yaml)
+# Fixes to messy labels go into <decisions_dir>/labels/value_renames.tsv and
+# image_fixes.tsv (pipeline/decisions_template/README.md), not into the CSV,
+# so every change stays visible.
+labels:
+  source: csv
+  path: data/raw/my_dataset/labels.csv
+  specimen: specimen            # column with the specimen (one physical object, e.g. one fish): its images
+                                # stay in one split. "none" only if you have no specimen information: every
+                                # image is then its own specimen, and the split warns about it
 
 # segment_fish.py settings for every domain (python scripts/segment_fish.py --help
 # has the details). Detection first, then the mask fixes, all off here; the
@@ -61,9 +78,10 @@ domains:
 
 # Train / val / test split by specimen (images of one specimen stay together).
 #   class   what the model learns: genus (first word of the species), binomial
-#           (genus + epithet; "sp.", "cf.", abbreviated epithets have none), or
-#           any labels.csv column as written, e.g. species. Images without a
-#           value are left out (split/<...>/dropped_no_class.txt).
+#           (genus + epithet; "sp.", "cf.", abbreviated epithets have none); both
+#           need a species column. Or any of your label columns as written, e.g.
+#           species, origin. Images without a value are left out
+#           (split/<...>/dropped_no_class.txt).
 split:
   class: genus
   seed: 0

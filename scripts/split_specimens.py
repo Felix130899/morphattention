@@ -1,11 +1,17 @@
-"""Train / val / test split by specimen (NMW catalog number), not by image.
+"""Train / val / test split by specimen, not by image.
 
 The same specimen appears in several images (left, right, head, X-ray), so a
 per-image split would test the model on fish it has already seen. This
-assigns whole specimens to one split, shared by both domains: a specimen's
+assigns whole specimens to one split, shared by all domains: a specimen's
 photos and X-rays always land in the same split.
 
-Specimen groups. The catalog number is read from the file name, right after
+Specimen groups come from the labels' ``specimen_id`` column when it has one
+(own labels CSV, import_labels.py): images with the same id are one group,
+and byte-identical images are merged too. Ids "image:<sha256>" (import_labels.py
+--specimen none) make every image its own specimen; the run warns about it.
+Images with an empty specimen_id are dropped (dropped_no_catalog.txt).
+
+NHM labels (extract_labels.py, no specimen_id column): the catalog number is read from the file name, right after
 "_NMW" / "_MNW" (an optional "_" before the digits is tolerated). A tail
 attached *without* an underscore is a catalog range or list and is expanded:
 "NMW12345-67" = 12345..12367, "NMW12340-45,48-53" = 12340..12345 +
@@ -51,11 +57,11 @@ Output (``--out``, in gitignored data/ - it holds catalog numbers); <class> is
 the column name of the class, e.g. genus / genus_evaluated:
     split.csv          one row per usable image: file_name, domain, specimen,
                        split, <class>, <class>_evaluated
-    specimens.csv      one row per specimen group: specimen, catalog_numbers,
-                       <class>, images per domain, split
+    specimens.csv      one row per specimen group: specimen, catalog_numbers
+                       (own labels: specimen_ids), <class>, images per domain, split
     balance.csv        per domain and class: evaluated, specimens and images
                        per split
-    dropped_no_catalog.txt   usable images without a catalog number
+    dropped_no_catalog.txt   usable images without a catalog number (own labels: specimen_id)
     dropped_no_class.txt     usable images with a catalog number but an empty class value
     duplicates.csv     byte-identical usable images: sha256, file_name, species,
                        specimen, split (not dropped here: which copy's label is
@@ -128,6 +134,18 @@ def catalog_keys(row):
     if m:
         return {("NMW" if m.group(1) == "MNW" else m.group(1), int(m.group(2)))}, []
     return set(), []
+
+
+def specimen_keys(row, from_column):
+    """Specimen keys of a labels row: {("id", specimen_id)} with own labels (``from_column``),
+    else its catalog numbers (catalog_keys). Empty if none; second item: ignored "-" tails."""
+    if from_column:
+        return ({("id", row["specimen_id"])} if row.get("specimen_id") else set()), []
+    return catalog_keys(row)
+
+
+def fmt_key(key):
+    return key[1] if key[0] == "id" else f"{key[0]}{key[1]}"
 
 
 def genus_of(species):
@@ -313,8 +331,12 @@ def main():
         reader = csv.DictReader(f)
         labels = list(reader)
     cls = args.class_name
-    if cls not in DERIVED_CLASSES and cls not in (reader.fieldnames or []):
+    fields = reader.fieldnames or []
+    if cls not in DERIVED_CLASSES and cls not in fields:
         parser.error(f"--class {cls!r}: not one of {sorted(DERIVED_CLASSES)} and not a column of {args.labels}")
+    if cls in DERIVED_CLASSES and "species" not in fields:
+        parser.error(f"--class {cls} is derived from a species column; {args.labels} has none")
+    from_column = "specimen_id" in fields  # own labels (import_labels.py); else NHM catalog numbers
     domains = sorted({r["photo_type"] for r in labels})
     status = load_status(args.segmented, domains)
     missing = [r["file_name"] for r in labels if r["file_name"] not in status]
@@ -325,7 +347,7 @@ def main():
     usable = [r for r in labels if status[r["file_name"]][0] == "ok" and not r.get("label_drop")]
     numbers, odd_tails, no_catalog = {}, 0, []
     for r in usable:
-        nums, odd = catalog_keys(r)
+        nums, odd = specimen_keys(r, from_column)
         odd_tails += bool(odd)
         if nums:
             numbers[r["file_name"]] = nums
@@ -355,7 +377,8 @@ def main():
     # which genera lost their evaluated status through the drops?
     dropped_rows = [r for r in labels if status[r["file_name"]][0] == "dropped" and not r.get("label_drop")
                     and class_of(r, cls)]
-    with_drops = {**numbers, **{r["file_name"]: catalog_keys(r)[0] for r in dropped_rows if catalog_keys(r)[0]}}
+    with_drops = {**numbers, **{r["file_name"]: specimen_keys(r, from_column)[0] for r in dropped_rows
+                                if specimen_keys(r, from_column)[0]}}
     spec_d = build_groups(with_drops, same_bytes)
     mem_d = collections.defaultdict(list)
     for r in rows + [r for r in dropped_rows if r["file_name"] in with_drops]:
@@ -374,11 +397,12 @@ def main():
             w.writerow([r["file_name"], r["photo_type"], sid, split[sid], c, c in evaluated[r["photo_type"]]])
     with open(args.out / "specimens.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["specimen", "catalog_numbers", cls, *[f"images_{d}" for d in domains], "split"])
+        w.writerow(["specimen", "specimen_ids" if from_column else "catalog_numbers", cls,
+                    *[f"images_{d}" for d in domains], "split"])
         for sid in sorted(members):
             nums = sorted(set().union(*(numbers[r["file_name"]] for r in members[sid])))
             per_d = collections.Counter(r["photo_type"] for r in members[sid])
-            w.writerow([sid, ";".join(f"{museum}{x}" for museum, x in nums), groups[sid]["class"],
+            w.writerow([sid, ";".join(fmt_key(k) for k in nums), groups[sid]["class"],
                         *[per_d[d] for d in domains], split[sid]])
     (args.out / "dropped_no_catalog.txt").write_text("".join(n + "\n" for n in no_catalog))
     (args.out / "dropped_no_class.txt").write_text("".join(n + "\n" for n in no_class))
@@ -417,18 +441,20 @@ def main():
                       "images": dict(img), "images_of_evaluated_classes": dict(ev), "specimens": dict(spec),
                       "lost_evaluation_through_drops": sorted(evaluated_d[d] - evaluated[d])}
     label_class_differs = sum(class_of(r, cls) != groups[specimen[r["file_name"]]]["class"] for r in rows)
+    per_image = sum(r["specimen_id"].startswith("image:") for r in rows) if from_column else 0
     counts = {"labels_rows": len(labels), "label_dropped": sum(bool(r.get("label_drop")) for r in labels),
               "usable": len(usable), "no_catalog_dropped": len(no_catalog), "no_class_dropped": len(no_class),
               "catalog_numbers": len(set().union(*numbers.values())),
               "specimen_groups": len(groups), "images_with_ignored_dash_tail": odd_tails,
               "rows_whose_class_differs_from_their_group": label_class_differs,
-              "byte_identical_sets": len(same_bytes),
+              "per_image_specimens": per_image, "byte_identical_sets": len(same_bytes),
               "byte_identical_sets_with_different_species": sum(
                   len({species_of[n] for n in names}) > 1 for names in same_bytes)}
     (args.out / "run_config.json").write_text(json.dumps({
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
         "labels": str(args.labels), "labels_sha256": hashlib.sha256(args.labels.read_bytes()).hexdigest(),
         "segmented": str(args.segmented),
+        "specimens_from": "labels column specimen_id" if from_column else "NHM catalog numbers",
         "settings": {"class": cls, "seed": args.seed, "val_frac": args.val_frac, "test_frac": args.test_frac,
                      "min_specimens": args.min_specimens, "max_range": MAX_RANGE},
         "counts": counts, "per_domain": summary, **git_state()}, indent=1, ensure_ascii=False))
@@ -436,6 +462,9 @@ def main():
     print(f"{counts['usable']} usable images, {len(no_catalog)} without catalog number and {len(no_class)} "
           f"without a {cls} dropped; {len(groups)} specimen groups ({odd_tails} images with a '-' sub-index tail ignored)")
     print(f"class = {cls}: {label_class_differs} images carry a {cls} other than their group's (synonyms)")
+    if per_image:
+        print(f"WARNING: {per_image} images have no specimen information (specimen_id image:<sha256>): each is its "
+              "own specimen, so images of one specimen can be in different splits")
     print(f"{len(same_bytes)} sets of byte-identical images, kept in one group each "
           f"({counts['byte_identical_sets_with_different_species']} with different species names): duplicates.csv")
     for d, s in summary.items():
