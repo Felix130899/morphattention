@@ -1,8 +1,9 @@
 {
   "name": "ViT Morphology Project",
-  "dockerComposeFile": "../docker-compose.yml",
+  "dockerComposeFile": ["../docker-compose.yml", "../docker-compose.override.yml"],
   "service": "vit-project",
   "workspaceFolder": "/workspace",
+  "initializeCommand": "test -f docker-compose.override.yml || cp docker-compose.override.example.yml docker-compose.override.yml",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -12,6 +13,6 @@
       ]
     }
   },
-  "postCreateCommand": "pip install -r requirements.txt",
+  "postCreateCommand": "pip install -r requirements.txt -c constraints.txt",
   "remoteUser": "vituser"
 }

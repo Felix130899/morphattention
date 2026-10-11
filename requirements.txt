@@ -1,13 +1,18 @@
-torch
-torchvision
-torchaudio
-numpy<2
+# Direct dependencies, pinned to the thesis container (2026-10-11). The base
+# image (Dockerfile) brings Python 3.10 and CUDA 12.1; sub-dependencies are
+# pinned in constraints.txt:
+#     pip install -r requirements.txt -c constraints.txt
+torch==2.2.1
+torchvision==0.17.1
+torchaudio==2.2.1
+numpy==1.26.3
 transformers==4.46.3
 tokenizers==0.20.3
-timm
-datasets
-matplotlib
-scikit-learn
-pandas
-opencv-python
-pyyaml
+timm==1.0.29
+datasets==5.0.1
+matplotlib==3.10.9
+scikit-learn==1.7.2
+pandas==2.3.3
+opencv-python==4.11.0.86
+pyyaml==6.0.1
+pytest==8.3.5

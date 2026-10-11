@@ -13,11 +13,19 @@ from PIL import Image
 from data.models.dino import load_dino, detect
 
 
+_REAL_CONNECT = socket.socket.connect
+
+
 def _block_network():
     def blocked_connect(self, *a, **kw):
         raise RuntimeError("Network access attempted during offline Grounding DINO inference!")
 
     socket.socket.connect = blocked_connect
+
+
+def teardown_function(function):
+    """Undo _block_network() under pytest, so later tests (the local review server) can connect."""
+    socket.socket.connect = _REAL_CONNECT
 
 
 def test_dino_offline_inference():

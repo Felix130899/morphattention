@@ -1,11 +1,37 @@
 # morphattention
 Explainability analysis of ViT attention maps on fish morphological features.
 
-docker build -t morphattention-env .
+## Setup (Docker)
 
-docker image (to check if it is there)
+Needs Docker with Compose v2 (`docker compose`) and, for the GPU, the NVIDIA Container Toolkit on the host.
+In the cloned repo:
 
-morph
+```bash
+printf 'USER_ID=%s\nGROUP_ID=%s\n' "$(id -u)" "$(id -g)" > .env    # files written in the container stay yours
+cp docker-compose.override.example.yml docker-compose.override.yml  # your own mounts, see below
+docker compose build
+docker compose run --rm vit-project python -c "import torch; print(torch.cuda.is_available())"
+# model weights, once (the only step that needs the network; afterwards everything runs offline)
+docker compose run --rm vit-project python scripts/download_sam.py
+docker compose run --rm vit-project python scripts/download_dino.py
+docker compose run --rm vit-project python -m pytest                # all tests
+```
+
+In VS Code, "Dev Containers: Reopen in Container" uses the same files and creates the override from the example
+when it is missing.
+
+**Your own setup** goes into `docker-compose.override.yml` (gitignored), never into `docker-compose.yml`:
+- images stored elsewhere: mount them under `data/raw/`, e.g.
+  `- /mnt/storage/fish_images:/workspace/data/raw/my_dataset:ro`
+- other personal mounts (editor or Claude Code config, notes)
+- no NVIDIA GPU: `deploy: !reset null` (Compose ≥ 2.24); SAM + DINO then run on the CPU, slowly
+
+`docker compose config` shows what Compose will actually use, both files merged.
+
+**Versions:** `requirements.txt` pins the direct dependencies; `constraints.txt` pins everything pip installs
+on top of the base image (`pytorch/pytorch:2.2.1-cuda12.1-cudnn8-runtime`, Python 3.10). To add a package, add
+it pinned to `requirements.txt`, rebuild, and copy its new sub-dependencies from `pip freeze` into
+`constraints.txt`.
 
 ## Project structure
 

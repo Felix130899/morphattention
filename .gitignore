@@ -5,6 +5,7 @@ __pycache__/
 .env
 .venv
 env/
+.pytest_cache/
 venv/
 build/
 dist/
@@ -27,10 +28,10 @@ datasets/
 *.csv
 
 # --- Docker ---
-# If you keep logs or local docker-compose overrides
+# docker-compose.yml is the tracked standard; machine-specific mounts go into
+# the override (see docker-compose.override.example.yml), UID/GID into .env
 .docker/
 docker-compose.override.yml
-docker-compose.yml
 
 # --- OS / Editors ---
 .DS_Store

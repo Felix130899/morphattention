@@ -17,11 +17,19 @@ from data.models.sam import load_sam, segment
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 
+_REAL_CONNECT = socket.socket.connect
+
+
 def _block_network():
     def blocked_connect(self, *a, **kw):
         raise RuntimeError("Network access attempted during offline SAM inference!")
 
     socket.socket.connect = blocked_connect
+
+
+def teardown_function(function):
+    """Undo _block_network() under pytest, so later tests (the local review server) can connect."""
+    socket.socket.connect = _REAL_CONNECT
 
 
 def test_sam_offline_inference():

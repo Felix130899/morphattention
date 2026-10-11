@@ -16,10 +16,11 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# 5. Copy requirements and install Python libraries
-# We do this before copying the rest of the code to use Docker's cache
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 5. Copy requirements and install Python libraries (pinned; constraints.txt
+# pins their sub-dependencies). We do this before copying the rest of the code
+# to use Docker's cache
+COPY requirements.txt constraints.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
 
 # 5b. Point the Hugging Face cache at the bind-mounted data/ folder instead
 # of baking model weights into the image. data/ already lives on the host
@@ -30,13 +31,15 @@ ENV HF_HOME=/workspace/data/model_cache/huggingface
 ENV HF_HUB_DISABLE_TELEMETRY=1
 ENV PYTHONPATH=/workspace/src
 
-# 6. Create a non-root user for better compatibility with host file permissions
-# Replace '1000' with your actual UID/GID if they differ (1000 is default for the first Ubuntu user)
+# 6. Create a non-root user with your host UID/GID, so files written in the
+# container belong to you on the host. docker-compose.yml passes them from .env
+# (default 1000, the first Ubuntu user). A GID that already exists in the image
+# (e.g. 20 on macOS) is reused instead of created.
 ARG USER_ID=1000
 ARG GROUP_ID=1000
-RUN groupadd -g ${GROUP_ID} vitgroup && \
-    useradd -l -u ${USER_ID} -g vitgroup -m vituser && \
-    chown -R vituser:vitgroup /workspace
+RUN (getent group ${GROUP_ID} || groupadd -g ${GROUP_ID} vitgroup) && \
+    useradd -l -u ${USER_ID} -g ${GROUP_ID} -m vituser && \
+    chown -R vituser:${GROUP_ID} /workspace
 
 USER vituser
 

@@ -1,0 +1,43 @@
+# Standard container for this repo. Machine-specific additions (extra mounts,
+# images stored elsewhere, your editor's config, no GPU) go into
+# docker-compose.override.yml: gitignored, start from
+# docker-compose.override.example.yml. `docker compose` merges it in
+# automatically; the devcontainer loads both files.
+#
+#   docker compose build                     # once, and after requirements.txt changes
+#   docker compose run --rm vit-project python -c "import torch; print(torch.cuda.is_available())"
+#   docker compose run --rm vit-project python -m pytest
+#
+# Your user and group id go into .env (gitignored), so files written in the
+# container belong to you on the host (default 1000 / 1000):
+#   printf 'USER_ID=%s\nGROUP_ID=%s\n' "$(id -u)" "$(id -g)" > .env
+
+services:
+  vit-project:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        USER_ID: ${USER_ID:-1000}
+        GROUP_ID: ${GROUP_ID:-1000}
+    image: vit-project:latest
+    working_dir: /workspace
+    tty: true
+    stdin_open: true
+    # PyTorch DataLoader workers share batches via /dev/shm; Docker's 64 MB
+    # default is too small.
+    shm_size: '8gb'
+    volumes:
+      # The repo, incl. data/ (raw images, outputs, model cache; gitignored),
+      # so everything persists across container rebuilds.
+      - .:/workspace
+    # GPU: needs the NVIDIA Container Toolkit on the host and Docker Compose v2
+    # (`docker compose`, not the old `docker-compose`). No GPU: see the
+    # override example.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,17 @@
+# Your machine-specific additions to docker-compose.yml. Copy to
+# docker-compose.override.yml (gitignored) and edit that copy; the devcontainer
+# creates it from this file when it is missing. Mounts listed here are added to
+# the repo mount, they don't replace it. Check the merged result with
+# `docker compose config`.
+services:
+  vit-project:
+    volumes: []
+    # Examples - replace "volumes: []" above with a list like this:
+    # volumes:
+    #   # images stored outside the repo, read-only, seen as data/raw/my_dataset:
+    #   - /mnt/storage/fish_images:/workspace/data/raw/my_dataset:ro
+    #   # your Claude Code settings and memory inside the container:
+    #   - ~/.claude:/home/vituser/.claude
+    #
+    # No NVIDIA GPU (Docker Compose >= 2.24; SAM + DINO on the CPU are slow):
+    # deploy: !reset null
