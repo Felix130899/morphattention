@@ -32,7 +32,9 @@ The other columns (`images_from`, `proposal`, `confidence`, …) are for the per
   catalog numbers) and `images` (how many images) must match the data.
   Decisions: `keep`, `rename A -> B` (everywhere), `rename in catalog A -> B` (only in these catalogs),
   `drop A` (in these catalogs).
-- **needs_review.tsv** decisions: `drop`, `set catalog NMW<number>`, `keep, own specimen group XYZ<number>`;
+- **needs_review.tsv** decisions: `drop`, `set catalog NMW<number>`, `keep, own specimen group XYZ<number>`,
+  `set species <name>` (when the parser found no species); combine with `; `, e.g.
+  `set catalog NMW<number>; set species Cottus gobio`;
   `<number>` is filled in from the file name at run time.
 
 The label parser and these two sheets are specific to file names of the form `Genus_species_NMW12345….jpg`

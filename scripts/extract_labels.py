@@ -49,7 +49,10 @@ them) on top of the parse, in this order:
   3. ``needs_review.tsv``: per image (key: SHA-256 of its bytes), "set
      catalog NMW<number>", "keep, own specimen group XYZ<number>" (another
      museum's number, its own specimen group), or "drop"; ``<number>`` is
-     read from the file name
+     read from the file name. "set species <name>" sets the species of an
+     image whose file name the parser could not read; it can follow a catalog
+     decision after "; " (e.g. "set catalog NMW<number>; set species Cottus
+     gobio")
   4. byte-identical images (same SHA-256): one copy is kept, the one whose
      file name already carries its final species name, else the
      alphabetically first; the others are dropped
@@ -277,17 +280,22 @@ def apply_decisions(rows, decisions_dir, sha):
             raise SystemExit(f"needs_review.tsv: {len(by_sha.get(d['sha256'], []))} images with sha256 {d['sha256']}")
         r = by_sha[d["sha256"]][0]
         dec = d["decision"]
-        m = re.fullmatch(r"set catalog (NMW)<number>|keep, own specimen group ([A-Z]+)<number>", dec)
-        if m:
-            num = CATALOG_NUMBER_RE.search(Path(r["file_name"]).stem)
-            if not num:
-                raise SystemExit(f"needs_review.tsv: no catalog number in the file name of {d['sha256']}")
-            r["catalog_number"] = f"{m.group(1) or m.group(2)}{num.group(1)}"
-        elif dec == "drop":
-            r["label_drop"] = f"needs_review: {d['note']}"
-            done["dropped_needs_review"] += 1
-        else:
-            raise SystemExit(f"needs_review.tsv: unknown decision {dec!r}")
+        parts = [x.strip() for x in dec.split(";")]
+        for part in parts:
+            m = re.fullmatch(r"set catalog (NMW)<number>|keep, own specimen group ([A-Z]+)<number>", part)
+            if m:
+                num = CATALOG_NUMBER_RE.search(Path(r["file_name"]).stem)
+                if not num:
+                    raise SystemExit(f"needs_review.tsv: no catalog number in the file name of {d['sha256']}")
+                r["catalog_number"] = f"{m.group(1) or m.group(2)}{num.group(1)}"
+            elif part == "drop" and len(parts) == 1:
+                r["label_drop"] = f"needs_review: {d['note']}"
+                done["dropped_needs_review"] += 1
+            elif re.fullmatch(r"set species \S.*", part):
+                r["species"] = part[len("set species "):].strip()
+                done["species_set"] += 1
+            else:
+                raise SystemExit(f"needs_review.tsv: unknown decision {part!r} in {dec!r}")
         r["needs_review"], r["review_reason"] = False, f"resolved: {dec}"
         r["label_change"].append(f"resolved: {dec}")
         done["needs_review_resolved"] += 1
@@ -368,7 +376,7 @@ def main():
         done = apply_decisions(rows, args.decisions, sha)
         columns += ["label_change", "label_drop"]
         print(f"Applied the decisions in {args.decisions} ({len(cache) - n_cached} images newly hashed):")
-        for key in ("genus_respelled", "renamed", "needs_review_resolved", "dropped_catalog_conflict",
+        for key in ("genus_respelled", "renamed", "needs_review_resolved", "species_set", "dropped_catalog_conflict",
                     "dropped_needs_review", "duplicate_sets", "duplicate_sets_genus_differs", "dropped_duplicate"):
             print(f"  {key}: {done[key]}")
 

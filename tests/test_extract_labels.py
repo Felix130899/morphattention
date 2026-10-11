@@ -122,6 +122,34 @@ def test_apply_decisions():
     assert by[names[0]]["label_change"] == "genus Tetrodon -> Tetraodon"
 
 
+
+def test_set_species_decision():
+    """"set species <name>" after "; " fills a species the parser could not read; bad combinations stop."""
+    names = ["full_body/Squalius_c._albus_MW55555_WEB.jpg", "Röntgen/Cottus_gobio_NRM(Stockholm)66666_RW2_WEB.jpg",
+             "full_body/Salmo_trutta_MNW12345_WEB.jpg"]
+    rows = [row(n) for n in names]
+    assert rows[0]["species"] is None and rows[1]["species"] is None
+    sha = {n: f"h{k}" for k, n in enumerate(names)}
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        make_sheets(d, [], [
+            (sha[names[0]], "no_catalog_anchor", "", "set catalog NMW<number>; set species Squalius c. albus"),
+            (sha[names[1]], "no_catalog_anchor", "", "keep, own specimen group NRM<number>; set species Cottus gobio")])
+        done = el.apply_decisions(rows, d, sha)
+        assert (rows[0]["species"], rows[0]["catalog_number"]) == ("Squalius c. albus", "NMW55555")
+        assert (rows[1]["species"], rows[1]["catalog_number"]) == ("Cottus gobio", "NRM66666")
+        assert rows[0]["label_change"] == "resolved: set catalog NMW<number>; set species Squalius c. albus"
+        assert done["species_set"] == 2 and done["needs_review_resolved"] == 2 and not rows[0]["label_drop"]
+        for bad in ("drop; set species Salmo trutta", "set species", "set catalog NMW<number>; rename Salmo"):
+            make_sheets(d, [], [(sha[names[2]], "catalog_prefix_typo", "", bad)])
+            try:
+                el.apply_decisions([row(n) for n in names], d, sha)
+            except SystemExit as e:
+                assert "unknown decision" in str(e)
+                continue
+            raise AssertionError(f"accepted {bad!r}")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
