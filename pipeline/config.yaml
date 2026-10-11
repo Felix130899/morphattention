@@ -49,12 +49,13 @@ segment:
   keep_near_frac: 0             # drop small pieces far from the fish (labels, rulers). thesis 0.02
   fill_holes_frac: 0            # fill small holes (speckled fins, X-ray grids). thesis 0.02
 
-# One entry per subfolder of raw_dir. "segment": settings that differ from the
-# block above for this domain. "qa_rule": a drop rule on the QA fields of each
-# mask, applied in "merge" (null = none; B = the thesis X-ray rule, see
-# merge_runs.py qa_rule_b).
+# One entry per subfolder of raw_dir. "label": name in the reports (default:
+# the folder name). "segment": settings that differ from the block above for
+# this domain. "qa_rule": a drop rule on the QA fields of each mask, applied in
+# "merge" (null = none; B = the thesis X-ray rule, see merge_runs.py qa_rule_b).
 domains:
   photos:
+    label: Photos
     segment: {}
     qa_rule: null
 
@@ -65,3 +66,61 @@ split:
   val_frac: 0.15
   test_frac: 0.15
   min_specimens: 5                       # specimen groups a genus needs in a domain to be evaluated there
+
+# Footer line of the review reports, e.g. image source and licence (null = none).
+attribution: null
+
+# Mask review (scripts/review_masks.py) and its reports (scripts/error_report.py,
+# scripts/compare_report.py).
+#   categories  error types, keys 1-9 on the review page in this order (max 9).
+#               Name them once and keep them: the names go into the recorded
+#               decisions, and a started review refuses a changed list. Add your
+#               own, e.g. split missing_part into missing_fin + missing_tail
+#               ("missing_<part>"). "highlight: true" adds a result tile.
+#   fixes       what to change in the segment block above if a category has to
+#               come down: setting, which way to turn it, what it costs. The
+#               reports show it next to the value the run used. Without "fixes"
+#               a category shows "no advice in the config".
+review:
+  max_rate: 0.10                         # accepted if error rate (fix + drop) / judged <= this
+  categories:
+    - name: bleed
+      text: background, shadow, tray, text or tag inside the mask; can leak label information into training
+      highlight: true
+      fixes:
+        - {setting: bleed_outside_frac, turn: "switch on, e.g. 0.02: replace a mask that leaks out of its box",
+           cost: "replacement masks are tighter: more missing_part / partial"}
+        - {setting: wrong_region_fix, turn: "switch on: re-prompt when the mask is the background around the object",
+           cost: "can pick an inner part of unusual specimens (e.g. dissected)"}
+        - {setting: keep_near_frac, turn: "switch on, e.g. 0.02: drop small pieces far from the object (labels, rulers)",
+           cost: can drop real detached parts}
+        - {setting: (none), turn: "objects touching the specimen (tags, rods)", cost: "no setting separates them; drop the image"}
+    - name: wrong_object
+      text: mask on something that is not the object
+      fixes:
+        - {setting: dino_box_threshold, turn: "higher: fewer, surer boxes", cost: more missed_object}
+        - {setting: dino_text, turn: narrower prompt, cost: more missed_object}
+    - name: merged
+      text: two or more objects in one mask
+      fixes:
+        - {setting: dino_box_threshold, turn: "higher: fewer boxes spanning two objects", cost: more missed_object}
+    - name: partial
+      text: only part of the object masked
+      fixes:
+        - {setting: mask_threshold, turn: "lower, e.g. -1: larger masks", cost: more bleed}
+        - {setting: candidate, turn: largest instead of score, cost: can include background (bleed)}
+    - name: missed_object
+      text: an object in the image has no mask
+      fixes:
+        - {setting: dino_box_threshold, turn: "lower, e.g. 0.25-0.30: more boxes", cost: more wrong_object}
+        - {setting: dino_text, turn: "add terms for the missed kind, e.g. 'fish. eel.'", cost: more boxes on non-targets}
+        - {setting: dedup_containment, turn: "higher: keeps a small object lying inside another's box",
+           cost: more duplicate masks}
+    - name: missing_part
+      text: a part of the object missing (e.g. a fin), or holes in the mask
+      fixes:
+        - {setting: mask_threshold, turn: "lower, e.g. -1: keeps thin, translucent parts", cost: "masks grow everywhere: more bleed"}
+        - {setting: fill_holes_frac, turn: "switch on, e.g. 0.02: fill small holes", cost: can close real gaps}
+        - {setting: fin_threshold, turn: "set below mask_threshold, e.g. -6: add faint parts touching the mask",
+           cost: "can add background; capped by fin_max_growth"}
+  caveats: []                            # extra lines for the reports' caveat section

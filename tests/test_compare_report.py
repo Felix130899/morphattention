@@ -13,7 +13,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import compare_report as cr  # noqa: E402
-from test_error_report import make_domain  # noqa: E402
+import review_masks as rm  # noqa: E402
+from test_error_report import CATS, THESIS, h2s, make_domain  # noqa: E402
+
+LABELS = THESIS["labels"]
 
 # (B verdict, B categories, D verdict, D categories) per image
 PAIRS = [("fix", ["missed_fish"], "ok", []),
@@ -32,6 +35,7 @@ def make_compare(tmp, domain="full_body", pairs=PAIRS, changed=None):
         run.mkdir(parents=True)
     review = tmp / f"review_compare_BD_{domain}"
     review.mkdir()
+    rm.start_review(review, CATS, "Neo", "test.yaml")
     items = [[r, n] for n in names for r in ("D", "B")]
     (review / "order.json").write_text(json.dumps({"seed": 0, "runs": {r: str(p) for r, p in runs.items()},
                                                    "items": items}))
@@ -54,7 +58,7 @@ def test_mcnemar_exact_p():
 
 def test_domain_stats_outcomes_rates_and_categories():
     with tempfile.TemporaryDirectory() as tmp:
-        s = cr.domain_stats(make_compare(Path(tmp)), "B", "D")
+        s = cr.domain_stats(make_compare(Path(tmp)), "B", "D", labels=LABELS)
         assert (s["key"], s["label"], s["n"]) == ("full_body", "Photos", 6)
         assert s["outcome"] == {"fixed": 2, "still": 2, "both_ok": 1, "broken": 1}
         assert s["rates"]["B"]["k"] == 4 and s["rates"]["D"]["k"] == 3  # drop counts as wrong
@@ -83,14 +87,24 @@ def test_scaling_and_expected_rate():
 def test_page_is_valid_offline_and_has_no_file_names():
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        stats = [cr.domain_stats(make_compare(tmp / d, d, changed=(60, 1000)), "B", "D") for d in ("full_body", "Röntgen")]
-        page = cr.render(stats, "B", "D", "2026-10-05", "python scripts/compare_report.py ...")
+        stats = [cr.domain_stats(make_compare(tmp / d, d, changed=(60, 1000)), "B", "D", labels=LABELS)
+                 for d in ("full_body", "Röntgen")]
+        page = cr.render(stats, THESIS, "B", "D", "2026-10-05", "python scripts/compare_report.py ...")
         for svg in re.findall(r"<svg.*?</svg>", page, re.S):
             ET.fromstring(svg)  # well-formed, e.g. "p < 0.001" escaped
         assert "NMW" not in page and "_WEB" not in page
         assert not re.findall(r"https?://", page)
         assert "Photos" in page and "X-rays" in page and "NHM Wien" in page
         assert "merged" in page  # named as empty in both runs
+        assert h2s(page) == cr.SECTIONS and "Changed images (IoU" in page
+        assert "Not applicable: mode changed" in page  # acceptance rule needs a random sample
+
+
+def test_changed_mode_without_changed_json_keeps_the_sections():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = cr.domain_stats(make_compare(Path(tmp)), "B", "D", labels=LABELS)
+        page = cr.render([s], THESIS, "B", "D", "2026-10-05", "cmd")
+        assert h2s(page) == cr.SECTIONS and "Not applicable: no <code>changed_vs_B.json</code>" in page
 
 
 def test_random_mode_needs_the_exact_sample_and_words_rates_for_the_whole_set():
@@ -100,13 +114,13 @@ def test_random_mode_needs_the_exact_sample_and_words_rates_for_the_whole_set():
         names = [f"Fish_NMW{k}_WEB.jpg" for k in range(len(PAIRS))]
         sample = tmp / "sample.json"
         sample.write_text(json.dumps({"seed": 2, "population": 4431, "sample": names}))
-        s = cr.domain_stats(review, "B", "D", sample=sample)
+        s = cr.domain_stats(review, "B", "D", sample=sample, labels=LABELS)
         assert (s["population"], s["sample_seed"]) == (4431, 2)
-        page = cr.render([s], "B", "D", "2026-10-08", "cmd", mode="random", max_rate=0.5)
+        page = cr.render([s], THESIS, "B", "D", "2026-10-08", "cmd", mode="random", max_rate=0.5)
         assert "random images of all 4,431" in page and "error rate (whole set)" in page
-        assert "random sample of the whole set" in page and "changed</strong> images only" not in page
-        assert "What this means for the whole set" not in page  # no scaling of changed images
-        assert "Acceptance rule (error rate ≤ 50 %)" in page
+        assert "random sample of the whole set" in page and "changed images only" not in page
+        assert "Not applicable: mode random" in page  # no scaling of changed images
+        assert h2s(page) == cr.SECTIONS and "Accepted if the error rate is <strong>≤ 50 %</strong>" in page
         assert page.count("✓ accepted") == 1 and page.count("✗ not accepted") == 1  # D 3/6 = 50 %, B 4/6
         sample.write_text(json.dumps({"seed": 2, "population": 4431, "sample": names[:-1]}))
         try:
@@ -121,16 +135,16 @@ def test_list_mode_and_groups():
         review = make_compare(Path(tmp), "Röntgen", changed=(60, 1000))
         fin = {"Fish_NMW0_WEB.jpg", "Fish_NMW1_WEB.jpg", "Fish_NMW2_WEB.jpg"}
         ok = {f"Fish_NMW{k}_WEB.jpg" for k in (3, 4, 5)}
-        a = cr.domain_stats(review, "B", "D", group=("fin_cut", fin))
-        b = cr.domain_stats(review, "B", "D", group=("ok", ok))
+        a = cr.domain_stats(review, "B", "D", group=("fin_cut", fin), labels=LABELS)
+        b = cr.domain_stats(review, "B", "D", group=("ok", ok), labels=LABELS)
         assert (a["label"], a["n"], b["label"], b["n"]) == ("X-rays · fin_cut", 3, "X-rays · ok", 3)
         assert a["outcome"] == {"fixed": 2, "still": 1, "both_ok": 0, "broken": 0}
         assert b["outcome"] == {"fixed": 0, "still": 1, "both_ok": 1, "broken": 1}
         none = cr.domain_stats(review, "B", "D", group=("other", {"Fish_NMW99_WEB.jpg"}))
         assert none["n"] == 0 and "changed" not in none  # a group nobody judged yet does not crash
-        page = cr.render([a, b], "B", "D", "2026-10-08", "cmd", mode="list", note="Dev list from seed 1.")
+        page = cr.render([a, b], THESIS, "B", "D", "2026-10-08", "cmd", mode="list", note="Dev list from seed 1.")
         assert "chosen list, not a random sample" in page and "Dev list from seed 1." in page
-        assert "listed images" in page and "What this means for the whole set" not in page
+        assert "listed images" in page and "Not applicable: mode list" in page and h2s(page) == cr.SECTIONS
         assert "random changed images" not in page
 
 

@@ -40,9 +40,11 @@ segment:
 # drop rule applied in "merge".
 domains:
   full_body:
+    label: Photos
     segment: {}
     qa_rule: null
   Röntgen:
+    label: X-rays
     segment:
       bleed_max_box_edge: 0.3            # tightly cropped X-rays touch their box legitimately
     qa_rule: B                           # vault decisions/2026-10-08-xray-drop-rule-B
@@ -52,3 +54,58 @@ split:
   val_frac: 0.15
   test_frac: 0.15
   min_specimens: 5                       # specimen groups a genus needs in a domain to be evaluated there
+
+# Footer line of the review reports.
+attribution: "Images: Naturhistorisches Museum Wien (NHM Wien), Fish Collection. Internal report, not for publication."
+
+# Mask review (scripts/review_masks.py) and its reports (scripts/error_report.py,
+# scripts/compare_report.py). The six categories of every thesis review, keys
+# 1-6 in this order; their names are in the recorded decisions, so never rename
+# them. "fixes": the segment setting to change if a category has to come down
+# (evidence: vault experiments/mask-quality-history).
+review:
+  max_rate: 0.10                         # accepted if error rate <= this (Neo, 2026-10-04)
+  categories:
+    - name: fin_cut
+      text: more than ~5 % of a fin missing
+      fixes:
+        - {setting: mask_threshold, turn: "lower, e.g. −2: keeps translucent fin membrane",
+           cost: "masks grow everywhere, more bleed; −1 cut fins 22 → 4 on the dev set (stage 2)"}
+        - {setting: candidate, turn: largest instead of score,
+           cost: "picks the biggest SAM candidate, which can include background"}
+        - {setting: margin_frac (training images), turn: already 3 % when building training images,
+           cost: "reviewed overlays have no margin; it may cover thin edge losses counted here"}
+    - name: bleed
+      text: background, shadow, tray, text or tag inside the mask; the only category that can leak label information into training
+      highlight: true
+      fixes:
+        - {setting: bleed_outside_frac, turn: "lower, e.g. 0.01: fallback fires on smaller leaks",
+           cost: "replacement masks are tighter, a few more fin_cut / partial (stage 4)"}
+        - {setting: bleed_max_box_edge, turn: "lower: stricter inverted-background masks",
+           cost: more images stay unresolved}
+        - {setting: (none), turn: "tags tied to the fish, X-ray plates and rods",
+           cost: "no setting separates them; drop the image"}
+    - name: merged
+      text: two or more fish in one mask
+      fixes:
+        - {setting: dino_box_threshold, turn: "higher: fewer boxes spanning two fish", cost: can lose small fish (missed_fish)}
+    - name: partial
+      text: only part of a fish masked
+      fixes:
+        - {setting: candidate, turn: largest instead of score, cost: can include background (bleed)}
+        - {setting: mask_threshold, turn: lower, cost: more bleed}
+    - name: missed_fish
+      text: a fish in the image has no mask
+      fixes:
+        - {setting: dino_box_threshold, turn: "lower, e.g. 0.25–0.30: more boxes", cost: "more wrong_object (rulers, labels)"}
+        - {setting: dino_text, turn: "add terms, e.g. 'fish. eel. ray.'", cost: more boxes on non-fish}
+        - {setting: dedup_containment, turn: "higher: keeps a small fish lying inside another's box",
+           cost: more duplicate masks of the same fish}
+    - name: wrong_object
+      text: mask on something that is not a fish
+      fixes:
+        - {setting: dino_box_threshold, turn: higher, cost: more missed_fish}
+        - {setting: dino_text, turn: narrower prompt, cost: more missed_fish}
+  caveats:                               # extra lines for the reports' caveat section
+    - "Categories judged by eye against the mask policy (vault decisions/2026-10-01-mask-policy)."
+    - "Overlays reviewed without the 3 % margin added when building training images: fin_cut is an upper bound for what the model sees."

@@ -1,20 +1,27 @@
 """Error-rate report for the random mask review: one self-contained HTML chart page.
 
-Reads each random review sample (``review_masks.py --sample``: sample.json +
-decisions.jsonl) and writes a page with, per domain: the error rate
-(fix + drop) / judged with a 95 % Wilson interval, the verdict against the
-acceptance limit, the count and rate per error category, and which
-segment_fish.py setting usually fixes each category (with the value the run
-used, read from its run_config.json). Nothing is fetched from outside; the page
-works offline and contains no file names.
+Reads each random review sample (``review_masks.py --sample``: sample.json,
+review.json, decisions.jsonl) and writes a page with, per domain: the error
+rate (fix + drop) / judged with a 95 % Wilson interval, the verdict against the
+acceptance limit, the count and rate per error category, and the settings that
+fix each category (with the value the run used, read from its run_config.json).
+Nothing is fetched from outside; the page works offline and contains no file names.
 
-    python scripts/error_report.py \\
+The categories and the reviewers come from each review dir's review.json; the
+category advice ("fixes"), the limit (review.max_rate), extra caveats, the
+domain labels and the footer line come from ``--config``
+(default pipeline/config.yaml).
+
+    python scripts/error_report.py --config pipeline/config_thesis_nhm.yaml \\
         --review-dir data/processed/segmented/B_merged_2026-10-03/full_body/review_random_seed0 \\
         --review-dir data/processed/segmented/B_merged_2026-10-03/Röntgen/review_random_seed0 \\
-        --max-rate 0.10 --out vault/thesis-log/experiments/2026-10-04-mask-error-rate.html
+        --out vault/thesis-log/experiments/2026-10-04-mask-error-rate.html
 
 Acceptance rule: a domain is accepted if its error rate (point estimate) is
-<= --max-rate. The upper Wilson bound is shown next to it, but does not decide.
+<= the limit. The upper Wilson bound is shown next to it, but does not decide.
+
+The page always has the same sections in the same order (SECTIONS); a section
+that does not apply says so in one line.
 """
 
 import argparse
@@ -25,61 +32,10 @@ from datetime import date
 from fractions import Fraction
 from pathlib import Path
 
-from review_masks import CATEGORIES, summarize_sample, wilson
+from review_masks import DEFAULT_CONFIG, load_review_config, read_review_meta, summarize_sample, wilson
 
-DOMAIN_LABELS = {"full_body": "Photos", "Röntgen": "X-rays"}
-
-CATEGORY_TEXT = {
-    "fin_cut": "more than ~5 % of a fin missing",
-    "bleed": "background, shadow, tray, text or tag inside the mask",
-    "merged": "two or more fish in one mask",
-    "partial": "only part of a fish masked",
-    "missed_fish": "a fish in the image has no mask",
-    "wrong_object": "mask on something that is not a fish",
-}
-
-# Category -> (setting, run_config key or None, which way to turn it, trade-off).
-# "Usually fixes" = what fixed this category in earlier stages
-# (vault/thesis-log/experiments/mask-quality-history.md) or what the setting is built for.
-FIXES = {
-    "fin_cut": [
-        ("--mask-threshold", "mask_threshold", "lower, e.g. −2: keeps translucent fin membrane",
-         "masks grow everywhere, more bleed; −1 cut fins 22 → 4 on the dev set (stage 2)"),
-        ("--candidate", "candidate", "largest instead of score",
-         "picks the biggest SAM candidate, which can include background"),
-        ("--margin-frac (training images)", None, "already 3 % when building training images",
-         "reviewed overlays have no margin; it may cover thin edge losses counted here"),
-    ],
-    "bleed": [
-        ("--bleed-outside-frac", "bleed_outside_frac", "lower, e.g. 0.01: fallback fires on smaller leaks",
-         "replacement masks are tighter, a few more fin_cut / partial (stage 4)"),
-        ("--bleed-max-box-edge", "bleed_max_box_edge", "lower: stricter inverted-background masks",
-         "more images stay unresolved"),
-        ("(none)", None, "tags tied to the fish, X-ray plates and rods",
-         "no setting separates them; drop the image"),
-    ],
-    "merged": [
-        ("--dino-box-threshold", "dino_box_threshold", "higher: fewer boxes spanning two fish",
-         "can lose small fish (missed_fish)"),
-    ],
-    "partial": [
-        ("--candidate", "candidate", "largest instead of score",
-         "can include background (bleed)"),
-        ("--mask-threshold", "mask_threshold", "lower", "more bleed"),
-    ],
-    "missed_fish": [
-        ("--dino-box-threshold", "dino_box_threshold", "lower, e.g. 0.25–0.30: more boxes",
-         "more wrong_object (rulers, labels)"),
-        ("--dino-text", "dino_text", "add terms, e.g. 'fish. eel. ray.'",
-         "more boxes on non-fish"),
-        ("--dedup-containment", "dedup_containment", "higher: keeps a small fish lying inside another's box",
-         "more duplicate masks of the same fish"),
-    ],
-    "wrong_object": [
-        ("--dino-box-threshold", "dino_box_threshold", "higher", "more missed_fish"),
-        ("--dino-text", "dino_text", "narrower prompt", "more missed_fish"),
-    ],
-}
+SECTIONS = ("Result", "Sample and acceptance rule", "Error rate per domain", "Difference between domains",
+            "Error categories", "Settings per category", "Caveats", "Rebuild this page")
 
 
 # Page style and hover tooltips, shared with compare_report.py. Colours: the
@@ -181,26 +137,60 @@ def accepted(bad, judged, max_rate):
     return judged > 0 and Fraction(bad, judged) <= Fraction(str(max_rate))
 
 
-def domain_stats(review_dir, max_rate):
+def domain_stats(review_dir, max_rate, labels=None):
+    """Stats of one random-sample review dir; ``labels``: {domain: name on the page} (config)."""
     row = summarize_sample(Path(review_dir))
+    meta = read_review_meta(review_dir)
     judged = row["judged"]
     bad = row["fix"] + row["drop"]
     low, high = wilson(bad, judged)
     key = domain_key(review_dir)
     cats = {}
-    for c in CATEGORIES:
-        c_low, c_high = wilson(row[c], judged)
-        cats[c] = {"k": row[c], "rate": row[c] / judged if judged else 0.0, "low": c_low, "high": c_high}
+    for c in meta["categories"]:
+        k = row[c["name"]]
+        c_low, c_high = wilson(k, judged)
+        cats[c["name"]] = {"k": k, "rate": k / judged if judged else 0.0, "low": c_low, "high": c_high}
     return {
-        "key": key, "label": DOMAIN_LABELS.get(key, key), "review_dir": str(review_dir),
+        "key": key, "label": (labels or {}).get(key, key), "review_dir": str(review_dir),
         "run_dir": row["run_dir"], "seed": row["seed"],
         "population": row["population"], "sample": row["sample"], "judged": judged,
         "ok": row["ok"], "fix": row["fix"], "drop": row["drop"], "bad": bad,
         "rate": bad / judged if judged else 0.0, "low": low, "high": high,
         "accepted": accepted(bad, judged, max_rate), "complete": judged == row["sample"],
         "est": [round(v * row["population"]) for v in (bad / judged if judged else 0.0, low, high)],
-        "cats": cats, "settings": run_settings(row["run_dir"]),
+        "cats": cats, "cat_text": {c["name"]: c["text"] for c in meta["categories"]},
+        "reviewers": meta["reviewers"], "settings": run_settings(row["run_dir"]),
     }
+
+
+def category_list(stats):
+    """Category names of all domains, in key order (first domain's, then any new ones)."""
+    out = []
+    for s in stats:
+        out += [c for c in s["cat_text"] if c not in out]
+    return out
+
+
+def category_info(name, stats, cfg):
+    """(text, highlight, fixes): the text the reviewer had (review.json), the advice from the config."""
+    conf = next((c for c in cfg["categories"] if c["name"] == name), None)
+    text = next((s["cat_text"][name] for s in stats if name in s["cat_text"]), "") or (conf or {}).get("text", "")
+    return text, bool(conf and conf["highlight"]), conf["fixes"] if conf else []
+
+
+def reviewer_caveat(stats):
+    names = []
+    for s in stats:
+        names += [r for r in s["reviewers"] if r not in names]
+    if not names:
+        return "Reviewer not recorded."
+    if len(names) == 1:
+        return f"One reviewer ({names[0]})."
+    return f"{len(names)} reviewers ({', '.join(names)}); results not split per reviewer."
+
+
+def page_footer(cfg):
+    return f"<footer>{esc(cfg['attribution'])}</footer>" if cfg.get("attribution") else ""
 
 
 def two_proportion_p(k1, n1, k2, n2):
@@ -222,6 +212,10 @@ def nice_max(v):
         if top / step <= 6:
             return top, step
     return 1.0, 0.25
+
+
+def fmt_p(p):
+    return "p < 0.001" if p < 0.001 else f"p = {p:.3f}"
 
 
 def pct(v, digits=1):
@@ -278,21 +272,24 @@ def rate_chart(stats, max_rate):
     return "".join(svg)
 
 
-def category_chart(stats):
+def category_chart(stats, cats):
     W, L, R, sub_h, gap, top = 640, 110, 70, 18, 14, 6
-    axis_top, step = nice_max(max(s["cats"][c]["high"] for s in stats for c in CATEGORIES) * 1.05)
+    axis_top, step = nice_max(max([s["cats"][c]["high"] for s in stats for c in cats if c in s["cats"]] or [0.01]) * 1.05)
     group_h = sub_h * len(stats) + gap
-    H = top + group_h * len(CATEGORIES) + 18
+    H = top + group_h * len(cats) + 18
     x = lambda v: L + v / axis_top * (W - L - R)  # noqa: E731
     svg = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Rate per error category and domain">']
     axis(svg, x, top - 2, H - 18, axis_top, step)
-    for g, c in enumerate(CATEGORIES):
+    for g, c in enumerate(cats):
         y0 = top + group_h * g
         svg.append(f'<text x="{L - 12}" y="{y0 + sub_h * len(stats) / 2 + 4:.1f}" text-anchor="end" '
-                   f'font-size="13" fill="var(--text-primary)">{c}</text>')
+                   f'font-size="13" fill="var(--text-primary)">{esc(c)}</text>')
         for i, s in enumerate(stats):
-            d = s["cats"][c]
             y = y0 + sub_h * i + sub_h // 2
+            if c not in s["cats"]:
+                svg.append(f'<text x="{W - R + 12}" y="{y + 4}" font-size="12" fill="var(--text-muted)">not reviewed</text>')
+                continue
+            d = s["cats"][c]
             tip = (f'{s["label"]}, {c}: {d["k"]} of {s["judged"]} = {pct(d["rate"])}, '
                    f'95 % CI {pct(d["low"])} – {pct(d["high"])}')
             interval_row(svg, x, y, d, f"var(--series-{i + 1})", tip)
@@ -303,11 +300,10 @@ def category_chart(stats):
 
 
 def fmt_setting(stats, key):
-    if key is None:
+    """The value each run used for a setting; "–" if it is not a run setting."""
+    if not any(key in s["settings"] for s in stats):
         return "–"
-    values = [s["settings"].get(key) for s in stats]
-    if all(v is None for v in values):
-        return "?"
+    values = ["off" if s["settings"].get(key) is None else s["settings"][key] for s in stats]
     if len(set(map(str, values))) == 1:
         return esc(values[0])
     return " / ".join(f'{esc(v)} ({esc(s["label"])})' for v, s in zip(values, stats))
@@ -315,76 +311,126 @@ def fmt_setting(stats, key):
 
 def verdict_sentence(s, max_rate):
     limit = pct(max_rate, 0)
+    ci = f'95 % CI {pct(s["low"])} – {pct(s["high"])}'
     if s["accepted"]:
-        text = f'<strong>{esc(s["label"])}: accepted</strong>, {pct(s["rate"])} ≤ {limit}.'
+        text = f'<strong>{esc(s["label"])}: accepted.</strong> Error rate {pct(s["rate"])} ≤ limit {limit}; {ci}.'
         if s["high"] > max_rate:
-            text += (f' The 95 % interval reaches {pct(s["high"])}, so the true rate may still be above '
-                     f'{limit}{" (the estimate sits exactly on the limit)" if Fraction(s["bad"], s["judged"]) == Fraction(str(max_rate)) else ""}.')
+            text += " Upper CI bound above the limit."
+            if Fraction(s["bad"], s["judged"]) == Fraction(str(max_rate)):
+                text += " Estimate equals the limit."
         else:
-            text += f" Even the upper end of the 95 % interval ({pct(s['high'])}) is below the limit."
+            text += " Upper CI bound below the limit."
     else:
-        text = (f'<strong>{esc(s["label"])}: not accepted</strong>, {pct(s["rate"])} > {limit}. '
-                "Change the setting for the largest category, rerun, blind compare, review a fresh sample.")
+        text = (f'<strong>{esc(s["label"])}: not accepted.</strong> Error rate {pct(s["rate"])} > limit {limit}; {ci}. '
+                "Next: change the setting for the largest category, rerun, blind compare, review a fresh sample.")
     if not s["complete"]:
-        text += f' Only {s["judged"]} of {s["sample"]} sample images judged so far.'
+        text += f' Judged: {s["judged"]} of {s["sample"]} sample images.'
     return text
 
 
-def render(stats, max_rate, created, out):
+def section(title, body):
+    return f"\n  <h2>{esc(title)}</h2>\n  {body}\n"
+
+
+def render(stats, cfg, max_rate, created, cmd):
+    """The page; ``cfg``: review_masks.load_review_config(); sections in SECTIONS order."""
     limit = pct(max_rate, 0)
-    legend = "".join(f'<span><span class="sw" style="background:var(--series-{i + 1})"></span>{esc(s["label"])}</span>'
-                     for i, s in enumerate(stats))
+    cats = category_list(stats)
+    info = {c: category_info(c, stats, cfg) for c in cats}
+
     tiles = []
     for s in stats:
         mark = "✓ accepted" if s["accepted"] else "✗ not accepted"
         tiles.append(f'<div class="card tile"><div class="label">{esc(s["label"])}: wrong masks</div>'
                      f'<div class="value">{pct(s["rate"])}</div>'
                      f'<div class="note {"good" if s["accepted"] else "bad"}">{mark} · CI {pct(s["low"])} – {pct(s["high"])}</div></div>')
-    for s in stats:
-        b = s["cats"]["bleed"]
-        tiles.append(f'<div class="card tile"><div class="label">{esc(s["label"])}: bleed (can leak labels)</div>'
-                     f'<div class="value">{pct(b["rate"])}</div>'
-                     f'<div class="note muted">{b["k"]} of {s["judged"]} · CI {pct(b["low"])} – {pct(b["high"])}</div></div>')
+    for c in (c for c in cats if info[c][1]):
+        for s in (s for s in stats if c in s["cats"]):
+            d = s["cats"][c]
+            tiles.append(f'<div class="card tile"><div class="label">{esc(s["label"])}: {esc(c)}</div>'
+                         f'<div class="value">{pct(d["rate"])}</div>'
+                         f'<div class="note muted">{d["k"]} of {s["judged"]} · CI {pct(d["low"])} – {pct(d["high"])}</div></div>')
+    result = (f'<div class="callout">{"".join(f"<p>{verdict_sentence(s, max_rate)}</p>" for s in stats)}</div>\n'
+              f'  <div class="tiles">{"".join(tiles)}</div>')
 
     rows = "".join(
         f'<tr><td>{esc(s["label"])}</td><td>{s["population"]:,}</td><td>{s["judged"]}</td><td>{s["ok"]}</td>'
         f'<td>{s["fix"]}</td><td>{s["drop"]}</td><td>{pct(s["rate"])}</td>'
         f'<td>{pct(s["low"])} – {pct(s["high"])}</td><td>≈ {s["est"][0]:,} ({s["est"][1]:,} – {s["est"][2]:,})</td>'
         f'<td>{"✓ accepted" if s["accepted"] else "✗ not accepted"}</td></tr>' for s in stats)
+    rule = f"""<p>Accepted if the error rate is <strong>≤ {limit}</strong> (point estimate). Error rate = images judged
+     <em>fix</em> or <em>drop</em> / images judged, in a seeded random sample of the usable images (dropped and
+     skipped images are not in the population). An image is wrong if any of its masks is wrong. The 95 % Wilson
+     interval is shown, not used for the decision.</p>
+  <div class="card table-wrap"><table>
+    <tr><th>Domain</th><th>Usable images</th><th>Judged</th><th>ok</th><th>fix</th><th>drop</th>
+        <th>Error rate</th><th>95 % CI</th><th>Wrong images in the full set</th><th>Verdict</th></tr>
+    {rows}
+  </table></div>"""
 
-    cat_head = "".join(f"<th>{esc(s['label'])}</th>" for s in stats)
-    cat_rows = "".join(
-        f"<tr><td><code>{c}</code></td><td class='left'>{CATEGORY_TEXT[c]}</td>"
-        + "".join(f"<td>{s['cats'][c]['k']} ({pct(s['cats'][c]['rate'])}, CI {pct(s['cats'][c]['low'])} – "
-                  f"{pct(s['cats'][c]['high'])})</td>" for s in stats) + "</tr>" for c in CATEGORIES)
+    rate = ("<p>Dot: error rate in the sample. Line: 95 % Wilson interval. Dashed line: limit.</p>\n"
+            f'  <div class="card">{rate_chart(stats, max_rate)}</div>')
 
-    fix_rows = []
-    for c in CATEGORIES:
-        counts = " / ".join(str(s["cats"][c]["k"]) for s in stats)
-        for j, (flag, key, direction, tradeoff) in enumerate(FIXES[c]):
-            first = (f'<td rowspan="{len(FIXES[c])}"><code>{c}</code><br><span class="muted">{counts}</span></td>'
-                     if j == 0 else "")
-            fix_rows.append(f"<tr>{first}<td class='left'><code>{esc(flag)}</code></td>"
-                            f"<td class='left'>{fmt_setting(stats, key)}</td><td class='left'>{esc(direction)}</td>"
-                            f"<td class='left'>{esc(tradeoff)}</td></tr>")
-
-    compare = ""
     if len(stats) == 2:
         a, b = stats
         p = two_proportion_p(a["bad"], a["judged"], b["bad"], b["judged"])
         diff = abs(a["rate"] - b["rate"]) * 100
-        sig = "a real difference at the 5 % level" if p < 0.05 else "not a significant difference"
-        compare = (f'<h2>Is one domain worse?</h2><p>{esc(b["label"])} {pct(b["rate"])} vs. {esc(a["label"])} '
-                   f'{pct(a["rate"])}: {diff:.1f} percentage points, p = {p:.2f} (two-proportion z-test), '
-                   f"so {sig}. The intervals overlap; with 300 images per domain a gap this size can be chance.</p>")
+        difference = (f'<p>{esc(b["label"])} {pct(b["rate"])} vs. {esc(a["label"])} {pct(a["rate"])}: difference '
+                      f'{diff:.1f} points, {fmt_p(p)} (two-proportion z-test): '
+                      f'{"significant" if p < 0.05 else "not significant"} at 5 %.</p>')
+    else:
+        difference = f"<p>Not applicable: needs exactly 2 domains, this report has {len(stats)}.</p>"
+
+    legend = "".join(f'<span><span class="sw" style="background:var(--series-{i + 1})"></span>{esc(s["label"])}</span>'
+                     for i, s in enumerate(stats))
+    cat_head = "".join(f"<th>{esc(s['label'])}</th>" for s in stats)
+    cat_rows = "".join(
+        f"<tr><td><code>{esc(c)}</code></td><td class='left'>{esc(info[c][0])}</td>"
+        + "".join(f"<td>{s['cats'][c]['k']} ({pct(s['cats'][c]['rate'])}, CI {pct(s['cats'][c]['low'])} – "
+                  f"{pct(s['cats'][c]['high'])})</td>" if c in s["cats"] else "<td>not reviewed</td>" for s in stats)
+        + "</tr>" for c in cats)
+    categories = f"""<p>Share of judged sample images with each category; one image can have several. Interval: 95 % Wilson.
+     Categories with overlapping intervals are not ranked against each other.</p>
+  <div class="legend">{legend}</div>
+  <div class="card">{category_chart(stats, cats)}
+    <div class="table-wrap"><table>
+      <tr><th>Category</th><th class="left">Meaning</th>{cat_head}</tr>{cat_rows}
+    </table></div>
+  </div>"""
+
+    fix_rows = []
+    for c in cats:
+        counts = " / ".join(str(s["cats"][c]["k"]) if c in s["cats"] else "–" for s in stats)
+        fixes = info[c][2]
+        if not fixes:
+            fix_rows.append(f"<tr><td><code>{esc(c)}</code><br><span class='muted'>{counts}</span></td>"
+                            "<td class='left' colspan='4'>no advice in the config</td></tr>")
+        for j, f in enumerate(fixes):
+            first = (f'<td rowspan="{len(fixes)}"><code>{esc(c)}</code><br><span class="muted">{counts}</span></td>'
+                     if j == 0 else "")
+            fix_rows.append(f"<tr>{first}<td class='left'><code>{esc(f['setting'])}</code></td>"
+                            f"<td class='left'>{fmt_setting(stats, f['setting'])}</td><td class='left'>{esc(f['turn'])}</td>"
+                            f"<td class='left'>{esc(f['cost'])}</td></tr>")
+    settings = f"""<p>Setting to change per category (from the config), the value these runs used, direction, cost.
+     After a change: rerun under a new name, blind compare against this run, review a fresh random sample (new seed).</p>
+  <div class="card table-wrap"><table>
+    <tr><th>Category<br><span class="muted">{esc(" / ".join(s["label"] for s in stats))}</span></th>
+        <th class="left">Setting</th><th class="left">Used</th><th class="left">Turn it</th><th class="left">Cost / evidence</th></tr>
+    {"".join(fix_rows)}
+  </table></div>"""
+
+    caveats = [reviewer_caveat(stats),
+               "Blind: the page showed no file name, QA flags or fish count.",
+               "The sample is random over images, not stratified by class: the rate does not apply to single classes.",
+               "The rate applies to the usable set only; dropped and skipped images are excluded by design.",
+               *cfg["caveats"]]
+    caveat_list = "<ul>\n" + "".join(f"    <li>{esc(c)}</li>\n" for c in caveats) + "  </ul>"
 
     order = ", ".join(f"{s['label']} {s['sample']}" for s in stats)
     run_names = sorted({Path(s["run_dir"]).parent.name for s in stats})
     seeds = sorted({str(s["seed"]) for s in stats})
-    cmd = " \\\n    ".join(["python scripts/error_report.py"]
-                           + [f"--review-dir {esc(s['review_dir'])}" for s in stats]
-                           + [f"--max-rate {max_rate}", f"--out {esc(out)}"])
-
+    bodies = dict(zip(SECTIONS, (result, rule, rate, difference, categories, settings, caveat_list,
+                                 f"<pre>{esc(cmd)}</pre>")))
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -397,66 +443,9 @@ def render(stats, max_rate, created, out):
 <body>
 <main>
   <h1>Mask error rate</h1>
-  <p class="sub">{created} · {esc(", ".join(run_names))} · random sample ({esc(order)}), seed {esc(", ".join(seeds))} · blind review by Neo · NHM Wien imagery</p>
-
-  <div class="callout">
-    {"".join(f"<p>{verdict_sentence(s, max_rate)}</p>" for s in stats)}
-  </div>
-
-  <div class="tiles">{"".join(tiles)}</div>
-
-  <h2>Acceptance rule</h2>
-  <p>A mask set is accepted if its error rate is <strong>≤ {limit}</strong> (Neo, 2026-10-04). Error rate =
-     images judged <em>fix</em> or <em>drop</em> / images judged, in a seeded random sample of the usable images
-     (dropped and skipped images are not in the population). An image counts as wrong if any of its masks is wrong.
-     The rule judges the point estimate; the 95 % Wilson interval shows how far the true rate could be off.</p>
-  <div class="card table-wrap"><table>
-    <tr><th>Domain</th><th>Usable images</th><th>Judged</th><th>ok</th><th>fix</th><th>drop</th>
-        <th>Error rate</th><th>95 % CI</th><th>Wrong images in the full set</th><th>Verdict</th></tr>
-    {rows}
-  </table></div>
-
-  <h2>Error rate per domain</h2>
-  <p>Dot = error rate in the sample, line = 95 % Wilson interval, dashed line = limit.</p>
-  <div class="card">{rate_chart(stats, max_rate)}</div>
-  {compare}
-
-  <h2>Which errors?</h2>
-  <p>Share of sample images with each error (an image can have several). Counts are small, so the intervals
-     overlap a lot: the categories cannot be ranked against each other, only told apart from zero.
-     Only <code>bleed</code> can leak label information (printed names, tags) into training, which is the
-     Clever Hans shortcut the masks exist to remove; the other categories lose morphology or a fish, not labels.</p>
-  <div class="legend">{legend}</div>
-  <div class="card">{category_chart(stats)}
-    <details><summary>Table view</summary><div class="table-wrap"><table>
-      <tr><th>Category</th><th class="left">Meaning</th>{cat_head}</tr>{cat_rows}
-    </table></div></details>
-  </div>
-
-  <h2>Which setting fixes each category</h2>
-  <p>The <code>segment_fish.py</code> setting to change if a category has to come down, the value these masks were
-     made with, and what it costs. Any change means: rerun, blind compare against this run, then review a
-     <strong>fresh</strong> random sample (new seed), not this one.</p>
-  <div class="card table-wrap"><table>
-    <tr><th>Category<br><span class="muted">{esc(" / ".join(s["label"] for s in stats))}</span></th>
-        <th class="left">Setting</th><th class="left">Current</th><th class="left">Turn it</th><th class="left">Cost / evidence</th></tr>
-    {"".join(fix_rows)}
-  </table></div>
-
-  <h2>Caveats</h2>
-  <ul>
-    <li>One reviewer (Neo); categories were judged by eye against the mask policy
-        (<code>decisions/2026-10-01-mask-policy.md</code>).</li>
-    <li>The overlays were reviewed <strong>without</strong> the 3 % margin that is added when building training
-        images, so <code>fin_cut</code> is an upper bound for what the model sees.</li>
-    <li>The sample is random over images, not stratified by genus; the rate says nothing about single genera.</li>
-    <li>The rate applies to the usable set only. Dropped images (status "dropped") are excluded by design.</li>
-  </ul>
-
-  <h2>Rebuild this page</h2>
-  <pre>{cmd}</pre>
-
-  <footer>Images: Naturhistorisches Museum Wien (NHM Wien), Fish Collection. Internal report, not for publication.</footer>
+  <p class="sub">{created} · runs {esc(", ".join(run_names))} · random sample ({esc(order)}), seed {esc(", ".join(seeds))} · blind review</p>
+{"".join(section(t, bodies[t]) for t in SECTIONS)}
+  {page_footer(cfg)}
 </main>
 <div class="tip" id="tip"></div>
 <script>
@@ -470,18 +459,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--review-dir", type=Path, action="append", required=True,
                         help="A random-sample review dir (review_masks.py --sample). Repeat per domain.")
-    parser.add_argument("--max-rate", type=float, default=0.10,
-                        help="Acceptance limit for the error rate, inclusive (default: %(default)s).")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
+                        help="Part-1 config: category advice, limit, caveats, labels, footer (default: %(default)s).")
+    parser.add_argument("--max-rate", type=float,
+                        help="Acceptance limit for the error rate, inclusive (default: the config's review.max_rate).")
     parser.add_argument("--out", type=Path, required=True, help="HTML file to write.")
     args = parser.parse_args()
 
-    stats = [domain_stats(d, args.max_rate) for d in args.review_dir]
+    try:
+        cfg = load_review_config(args.config)
+        max_rate = cfg["max_rate"] if args.max_rate is None else args.max_rate
+        stats = [domain_stats(d, max_rate, cfg["labels"]) for d in args.review_dir]
+    except ValueError as e:
+        raise SystemExit(str(e))
+    cmd = " \\\n    ".join([f"python scripts/error_report.py --config {args.config}"]
+                           + [f"--review-dir {d}" for d in args.review_dir]
+                           + ([f"--max-rate {args.max_rate}"] if args.max_rate is not None else [])
+                           + [f"--out {args.out}"])
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(render(stats, args.max_rate, date.today().isoformat(), args.out))
+    args.out.write_text(render(stats, cfg, max_rate, date.today().isoformat(), cmd))
     for s in stats:
         print(f'{s["label"]}: {s["bad"]} / {s["judged"]} = {pct(s["rate"])} '
               f'(95 % CI {pct(s["low"])} - {pct(s["high"])}) -> {"accepted" if s["accepted"] else "NOT accepted"}'
-              f' at <= {pct(args.max_rate, 0)}{"" if s["complete"] else "  [sample not fully judged]"}')
+              f' at <= {pct(max_rate, 0)}{"" if s["complete"] else "  [sample not fully judged]"}')
     print(f"Wrote {args.out}")
 
 

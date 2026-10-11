@@ -27,17 +27,23 @@ Nothing is fetched from outside; the page works offline and contains no file nam
 ``--groups`` (CSV file_name,group) splits every domain into one row per group,
 e.g. fin_cut vs. ok images of a dev list.
 
+The categories and the reviewers come from each review dir's review.json; the
+limit for random mode (review.max_rate), extra caveats, the domain labels and
+the footer line from ``--config`` (default pipeline/config.yaml). The page
+always has the same sections in the same order (SECTIONS); a section that does
+not apply to the mode says so in one line.
+
     python scripts/compare_report.py --mode random --before B --after E \\
         --review-dir data/processed/segmented/review_compare_BE_Röntgen_seed2 \\
         --sample data/processed/segmented/E_merged_<DATE>/Röntgen/sample_seed2/sample.json \\
-        --max-rate 0.10 --out vault/thesis-log/experiments/<DATE>-compare-B-vs-E.html
+        --config pipeline/config_thesis_nhm.yaml --out vault/thesis-log/experiments/<DATE>-compare-B-vs-E.html
 
     python scripts/compare_report.py --before B --after D \\
         --review-dir data/processed/segmented/review_compare_BD_full_body \\
         --review-dir data/processed/segmented/review_compare_BD_Röntgen \\
         --baseline data/processed/segmented/B_merged_2026-10-03/full_body/review_random_seed0 \\
         --baseline data/processed/segmented/B_merged_2026-10-03/Röntgen/review_random_seed0 \\
-        --out vault/thesis-log/experiments/2026-10-05-compare-B-vs-D.html
+        --config pipeline/config_thesis_nhm.yaml --out vault/thesis-log/experiments/2026-10-05-compare-B-vs-D.html
 """
 
 import argparse
@@ -47,8 +53,13 @@ import math
 from datetime import date
 from pathlib import Path
 
-from error_report import CATEGORY_TEXT, DOMAIN_LABELS, PAGE_CSS, TIP_JS, esc, pct
-from review_masks import CATEGORIES, load_decisions, summarize_sample, wilson
+from error_report import (PAGE_CSS, TIP_JS, accepted, axis, category_info, category_list, esc, fmt_p, interval_row,
+                          nice_max, page_footer, pct, reviewer_caveat, section)
+from review_masks import DEFAULT_CONFIG, load_decisions, load_review_config, read_review_meta, summarize_sample, wilson
+
+SECTIONS = ("Result", "Error rate before and after", "What happened to each image",
+            "Error categories: gone, kept, new", "Scaling to the whole set", "Acceptance rule", "Caveats",
+            "Rebuild this page")
 
 # Outcome of one image, before -> after. Status colours (dataviz reference
 # palette, fixed in both modes); each ships with an icon and a label.
@@ -81,18 +92,16 @@ def mcnemar_exact_p(b, c):
     return min(1.0, 2 * tail)
 
 
-def fmt_p(p):
-    return "p < 0.001" if p < 0.001 else f"p = {p:.3f}"
-
-
 MODES = ("changed", "random", "list")
 
 
-def domain_stats(review_dir, before, after, baseline=None, sample=None, group=None):
+def domain_stats(review_dir, before, after, baseline=None, sample=None, group=None, labels=None):
     """Stats of one compare review dir. ``sample``: the sample.json the judged
     images were drawn as (random mode; must match exactly). ``group``:
-    (name, set of file names) - only those images, labelled with the name."""
+    (name, set of file names) - only those images, labelled with the name.
+    ``labels``: {domain: name on the page} (config)."""
     review_dir = Path(review_dir)
+    meta = read_review_meta(review_dir)
     saved = json.loads((review_dir / "order.json").read_text())
     runs = saved["runs"]
     for r in (before, after):
@@ -119,15 +128,16 @@ def domain_stats(review_dir, before, after, baseline=None, sample=None, group=No
         low, high = wilson(len(w), n)
         rates[r] = {"k": len(w), "rate": len(w) / n if n else 0.0, "low": low, "high": high}
     cats = {}
-    for c in CATEGORIES:
+    for c in (c["name"] for c in meta["categories"]):
         has = {r: {m for m in paired if c in decisions[(r, m)]["categories"]} for r in (before, after)}
         cats[c] = {"before": len(has[before]), "after": len(has[after]), "gone": len(has[before] - has[after]),
                    "kept": len(has[before] & has[after]), "new": len(has[after] - has[before])}
     run_dir = Path(runs[after])
     key = run_dir.name
-    label = DOMAIN_LABELS.get(key, key) + (f" · {group[0]}" if group is not None else "")
+    label = (labels or {}).get(key, key) + (f" · {group[0]}" if group is not None else "")
     s = {"key": key, "label": label, "review_dir": str(review_dir), "runs": runs,
          "seed": saved["seed"], "images": len(names), "n": n, "outcome": outcome, "rates": rates, "cats": cats,
+         "cat_text": {c["name"]: c["text"] for c in meta["categories"]}, "reviewers": meta["reviewers"],
          "p": mcnemar_exact_p(outcome["fixed"], outcome["broken"])}
     if smp is not None:
         s["population"], s["sample_seed"] = smp["population"], smp["seed"]
@@ -202,7 +212,7 @@ def category_chart(s, cats, axis_top):
     for g, c in enumerate(cats):
         y0 = top + group_h * g
         svg.append(f'<text x="{L - 10}" y="{y0 + bar_h + 4}" text-anchor="end" font-size="12" '
-                   f'fill="var(--text-primary)">{c}</text>')
+                   f'fill="var(--text-primary)">{esc(c)}</text>')
         d = s["cats"][c]
         for j, (run, k, color) in enumerate(((before, d["before"], "var(--before)"),
                                              (after, d["after"], "var(--after)"))):
@@ -231,111 +241,177 @@ def describe(s, mode):
     return "random changed images", "wrong among changed"
 
 
-def rule_section(stats, before, after, max_rate):
-    """Random mode: each run's error rate against the acceptance limit."""
+def rate_chart(stats, before, after, max_rate=None):
+    """Wrong rate of both runs per domain: dot + 95 % Wilson interval; dashed limit in random mode."""
+    W, L, R, row_h, top = 640, 150, 150, 26, 22
+    ends = [s["rates"][r]["high"] for s in stats for r in (before, after)] + ([max_rate] if max_rate is not None else [])
+    axis_top, step = nice_max(max(ends + [0.01]) * 1.05)
+    H = top + row_h * 2 * len(stats) + 8 * len(stats) + 22
+    x = lambda v: L + v / axis_top * (W - L - R)  # noqa: E731
+    svg = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Wrong rate per run and domain with 95 % Wilson interval">']
+    axis(svg, x, top - 6, H - 22, axis_top, step)
+    if max_rate is not None:
+        svg.append(f'<line x1="{x(max_rate):.1f}" x2="{x(max_rate):.1f}" y1="{top - 10}" y2="{H - 22}" '
+                   'stroke="var(--text-secondary)" stroke-width="1.5" stroke-dasharray="4 3"/>')
+        svg.append(f'<text x="{x(max_rate):.1f}" y="{top - 14}" text-anchor="middle" font-size="11" '
+                   f'fill="var(--text-secondary)">limit {pct(max_rate, 0)}</text>')
+    for i, s in enumerate(stats):
+        for j, (run, color) in enumerate(((before, "var(--before)"), (after, "var(--after)"))):
+            y = top + (2 * row_h + 8) * i + row_h * j + row_h // 2
+            d = s["rates"][run]
+            svg.append(f'<text x="{L - 12}" y="{y + 4}" text-anchor="end" font-size="13" '
+                       f'fill="var(--text-primary)">{esc(s["label"])} · {esc(run)}</text>')
+            tip = (f'{s["label"]}, run {run}: {d["k"]} of {s["n"]} wrong = {pct(d["rate"])}, '
+                   f'95 % CI {pct(d["low"])} – {pct(d["high"])}')
+            interval_row(svg, x, y, d, color, tip, f'{pct(d["rate"])}  ({pct(d["low"])} – {pct(d["high"])})')
+    svg.append("</svg>")
+    return "".join(svg)
+
+
+def scaling_section(stats, before, after, mode):
+    if mode != "changed":
+        why = "random sample of the whole set" if mode == "random" else "chosen list, not a random sample"
+        return f"<p>Not applicable: mode {mode} ({why}).</p>"
+    if not all("changed" in s for s in stats):
+        return (f"<p>Not applicable: no <code>changed_vs_{esc(before)}.json</code> (scripts/mask_changes.py) "
+                "in the after run of every domain.</p>")
+    rows = []
+    for s in stats:
+        ef = s["est_fixed"]
+        base = s.get("baseline")
+        exp = (f'{pct(base["rate"])} → <strong>≈ {pct(base["expected"])}</strong>' if base else "–")
+        rows.append(f'<tr><td>{esc(s["label"])}</td><td>{s["changed"]:,} of {s["compared"]:,} '
+                    f'({pct(s["changed"] / s["compared"])})</td>'
+                    f'<td>≈ {ef[0]:,} ({ef[1]:,} – {ef[2]:,})</td><td>≤ {s["est_broken_max"]:,}</td>'
+                    f'<td>{exp}</td></tr>')
+    return f"""<p>Unchanged masks are identical in both runs; the difference is in the changed images only. Sample
+     shares scaled to all changed images (95 % Wilson).</p>
+  <div class="card table-wrap"><table>
+    <tr><th>Domain</th><th>Changed images (IoU &lt; 0.99)</th><th>Masks fixed by {esc(after)}</th>
+        <th>Masks broken by {esc(after)} (95 % upper bound)</th><th>Expected error rate {esc(before)} → {esc(after)}</th></tr>
+    {"".join(rows)}
+  </table></div>
+  <p>Expected error rate = {esc(before)}'s rate in its random review − share of changed images × (fixed − broken) /
+     judged (only with <code>--baseline</code>). Estimate only; a fresh random sample of {esc(after)} measures the rate.</p>"""
+
+
+def acceptance_section(stats, before, after, mode, max_rate):
+    if mode != "random":
+        why = "the images are changed images only" if mode == "changed" else "the images are a chosen list"
+        return f"<p>Not applicable: mode {mode} ({why}); the rule needs a random sample of the whole set.</p>"
     rows = []
     for s in stats:
         for r in (before, after):
             x = s["rates"][r]
-            ok = x["rate"] <= max_rate
+            ok = accepted(x["k"], s["n"], max_rate)
             rows.append(f'<tr><td>{esc(s["label"])}</td><td>{esc(r)}</td><td>{x["k"]} / {s["n"]}</td>'
                         f'<td><strong>{pct(x["rate"])}</strong></td><td>{pct(x["low"])} – {pct(x["high"])}</td>'
                         f'<td class="{"good" if ok else "bad"}">{"✓ accepted" if ok else "✗ not accepted"}</td></tr>')
-    return f"""
-  <h2>Acceptance rule (error rate ≤ {pct(max_rate, 0)})</h2>
-  <p>Both runs were judged on the same random images in the same blind session, so this is a like-for-like
-     comparison of their error rates. The rule uses the point estimate; the 95 % Wilson interval is shown.</p>
+    return f"""<p>Accepted if the error rate is <strong>≤ {pct(max_rate, 0)}</strong> (point estimate). Both runs judged on
+     the same random images in one blind session. The 95 % Wilson interval is shown, not used for the decision.</p>
   <div class="card table-wrap"><table>
     <tr><th>Domain</th><th>Run</th><th>Wrong / judged</th><th>Error rate</th><th>95 % CI</th><th>Verdict</th></tr>
     {"".join(rows)}
   </table></div>"""
 
 
-def render(stats, before, after, created, cmd, mode="changed", max_rate=None, note=None):
+def render(stats, cfg, before, after, created, cmd, mode="changed", max_rate=None, note=None):
+    """The page; ``cfg``: review_masks.load_review_config(); sections in SECTIONS order.
+    ``max_rate``: the limit (random mode only)."""
     head = []
     for s in stats:
         o, rb, ra = s["outcome"], s["rates"][before], s["rates"][after]
-        head.append(f'<p><strong>{esc(s["label"])}:</strong> of {s["n"]} {describe(s, mode)[0]}, {after} fixed '
-                    f'<strong>{o["fixed"]}</strong> that were wrong in {before} and broke <strong>{o["broken"]}</strong>; '
-                    f'wrong masks {pct(rb["rate"], 0)} → {pct(ra["rate"], 0)} ({esc(fmt_p(s["p"]))}).</p>')
+        head.append(f'<p><strong>{esc(s["label"])}:</strong> {s["n"]} {describe(s, mode)[0]}. Wrong {esc(before)} '
+                    f'{pct(rb["rate"], 0)} → {esc(after)} {pct(ra["rate"], 0)}. Fixed <strong>{o["fixed"]}</strong>, '
+                    f'broken <strong>{o["broken"]}</strong> (McNemar exact {esc(fmt_p(s["p"]))}): '
+                    f'{"significant" if s["p"] < 0.05 else "not significant"} at 5 %.</p>')
     tiles = []
     for s in stats:
         rb, ra = s["rates"][before], s["rates"][after]
         tiles.append(f'<div class="card tile"><div class="label">{esc(s["label"])}: {describe(s, mode)[1]}</div>'
                      f'<div class="value">{pct(rb["rate"], 0)} <span class="arrow">→</span> {pct(ra["rate"], 0)}</div>'
-                     f'<div class="note muted">{after}: CI {pct(ra["low"], 0)} – {pct(ra["high"], 0)} · '
-                     f'{before}: {pct(rb["low"], 0)} – {pct(rb["high"], 0)}</div></div>')
+                     f'<div class="note muted">{esc(after)}: CI {pct(ra["low"], 0)} – {pct(ra["high"], 0)} · '
+                     f'{esc(before)}: {pct(rb["low"], 0)} – {pct(rb["high"], 0)}</div></div>')
     for s in stats:
         o = s["outcome"]
         _, high = wilson(o["broken"], s["n"])
-        tiles.append(f'<div class="card tile"><div class="label">{esc(s["label"])}: fixed / broken by {after}</div>'
+        tiles.append(f'<div class="card tile"><div class="label">{esc(s["label"])}: fixed / broken by {esc(after)}</div>'
                      f'<div class="value">{o["fixed"]} <span class="arrow">/</span> {o["broken"]}</div>'
                      f'<div class="note {"good" if o["broken"] == 0 else "bad"}">'
                      f'{"✓ none broken" if o["broken"] == 0 else "✗ some broken"} · broken ≤ {pct(high)} (95 %)</div></div>')
+    result = f'<div class="callout">{"".join(head)}</div>\n  <div class="tiles">{"".join(tiles)}</div>'
+
+    rates = (f"<p>Wrong = verdict fix or drop. Dot: share of the {esc(' / '.join(str(s['n']) for s in stats))} images "
+             "judged in both runs. Line: 95 % Wilson interval."
+             + (" Dashed line: limit." if max_rate is not None and mode == "random" else "") + "</p>\n"
+             f'  <div class="card">{rate_chart(stats, before, after, max_rate if mode == "random" else None)}</div>')
 
     legend = "".join(f'<span><span class="sw" style="background:{color}"></span>{icon} {name}</span>'
                      for _, icon, name, _, color in OUTCOMES)
-    cats = [c for c in CATEGORIES if any(s["cats"][c]["before"] or s["cats"][c]["after"] for s in stats)]
-    empty = [c for c in CATEGORIES if c not in cats]
-    axis_top = max(20, math.ceil(max(max(s["cats"][c]["before"], s["cats"][c]["after"])
-                                     for s in stats for c in cats) / 20) * 20)
-    facets = "".join(f'<div class="card"><h3>{esc(s["label"])}</h3>{category_chart({**s, "before": before, "after": after}, cats, axis_top)}</div>'
-                     for s in stats)
-    trans_head = "".join(f'<th>{esc(s["label"])}<br><span class="muted">{before} → {after}</span></th>'
-                         f'<th>gone</th><th>kept</th><th>new</th>' for s in stats)
-    trans_rows = "".join(
-        f"<tr><td><code>{c}</code><br><span class='muted'>{CATEGORY_TEXT[c]}</span></td>"
-        + "".join(f"<td>{s['cats'][c]['before']} → {s['cats'][c]['after']}</td><td>{s['cats'][c]['gone']}</td>"
-                  f"<td>{s['cats'][c]['kept']}</td><td>{s['cats'][c]['new']}</td>" for s in stats) + "</tr>"
-        for c in cats)
     outcome_rows = "".join(
         f'<tr><td>{esc(s["label"])}</td><td>{s["n"]}</td>'
         + "".join(f'<td>{s["outcome"][key]}</td>' for key, *_ in OUTCOMES)
         + f'<td>{esc(fmt_p(s["p"]))}</td></tr>' for s in stats)
+    outcomes = f"""<p>Each image judged once per run, in random order, run hidden. McNemar exact test: whether fixed and
+     broken images are equally likely.</p>
+  <div class="legend">{legend}</div>
+  <div class="card">{outcome_chart(stats)}
+    <div class="table-wrap"><table>
+      <tr><th>Domain</th><th>Images</th>{"".join(f"<th>{icon} {name}</th>" for _, icon, name, _, _ in OUTCOMES)}<th>McNemar</th></tr>
+      {outcome_rows}
+    </table></div>
+  </div>"""
 
-    scale = ""
-    if mode == "changed" and all("changed" in s for s in stats):
-        rows = []
-        for s in stats:
-            ef = s["est_fixed"]
-            base = s.get("baseline")
-            exp = (f'{pct(base["rate"])} → <strong>≈ {pct(base["expected"])}</strong>' if base else "–")
-            rows.append(f'<tr><td>{esc(s["label"])}</td><td>{s["changed"]:,} of {s["compared"]:,} '
-                        f'({pct(s["changed"] / s["compared"])})</td>'
-                        f'<td>≈ {ef[0]:,} ({ef[1]:,} – {ef[2]:,})</td><td>≤ {s["est_broken_max"]:,}</td>'
-                        f'<td>{exp}</td></tr>')
-        scale = f"""
-  <h2>What this means for the whole set</h2>
-  <p>Images whose mask did not change are identical in both runs, so all of the difference sits in the changed
-     images. Scaling the sample shares to every changed image (95 % Wilson intervals): </p>
+    all_cats = category_list(stats)
+    cats = [c for c in all_cats if any(c in s["cats"] and (s["cats"][c]["before"] or s["cats"][c]["after"]) for s in stats)]
+    empty = [c for c in all_cats if c not in cats]
+    if cats:
+        axis_top = max(20, math.ceil(max(max(s["cats"][c]["before"], s["cats"][c]["after"])
+                                         for s in stats for c in cats if c in s["cats"]) / 20) * 20)
+        facets = "".join(f'<div class="card"><h3>{esc(s["label"])}</h3>'
+                         f'{category_chart({**s, "before": before, "after": after}, [c for c in cats if c in s["cats"]], axis_top)}</div>'
+                         for s in stats)
+    else:
+        facets = ""
+    trans_head = "".join(f'<th>{esc(s["label"])}<br><span class="muted">{esc(before)} → {esc(after)}</span></th>'
+                         f'<th>gone</th><th>kept</th><th>new</th>' for s in stats)
+    trans_rows = "".join(
+        f"<tr><td><code>{esc(c)}</code><br><span class='muted'>{esc(category_info(c, stats, cfg)[0])}</span></td>"
+        + "".join(f"<td>{s['cats'][c]['before']} → {s['cats'][c]['after']}</td><td>{s['cats'][c]['gone']}</td>"
+                  f"<td>{s['cats'][c]['kept']}</td><td>{s['cats'][c]['new']}</td>" if c in s["cats"]
+                  else "<td>not reviewed</td><td></td><td></td><td></td>" for s in stats) + "</tr>"
+        for c in all_cats)
+    n_text = esc(" / ".join(str(s["n"]) for s in stats))
+    categories = f"""<p>Images with each category, out of {n_text} per domain; one image can have several. Gone: in
+     {esc(before)}, not in {esc(after)} for the same image. New: in {esc(after)}, not in {esc(before)}.
+     No images with: {", ".join(f"<code>{esc(c)}</code>" for c in empty) if empty else "none"}.</p>
+  <div class="legend"><span><span class="sw" style="background:var(--before)"></span>{esc(before)} (before)</span>
+    <span><span class="sw" style="background:var(--after)"></span>{esc(after)} (after)</span></div>
+  <div class="facets">{facets}</div>
   <div class="card table-wrap"><table>
-    <tr><th>Domain</th><th>Changed images (IoU &lt; 0.99)</th><th>Masks fixed by {after}</th>
-        <th>Masks broken by {after} (95 % upper bound)</th><th>Expected error rate {before} → {after}</th></tr>
-    {"".join(rows)}
-  </table></div>
-  <p>Expected error rate = {before}'s rate in its random review − share of changed images × (fixed − broken) / judged.
-     It is a <strong>rough expectation</strong>, not the thesis number: the fresh random sample of {after}
-     (seed 1, step 5 of the task) measures it.</p>"""
+    <tr><th>Category</th>{trans_head}</tr>{trans_rows}
+  </table></div>"""
 
     counts = esc(", ".join(f'{s["label"]} {s["n"]}' for s in stats))
     if mode == "random":
-        scale = rule_section(stats, before, after, max_rate) if max_rate is not None else ""
         what = (f'{counts} random images of the whole set (sample seed {esc(stats[0]["sample_seed"])}), '
                 f'both runs judged in one session')
-        caveat = ("The images are a <strong>random sample of the whole set</strong>, so the rates estimate each "
-                  "run's error rate. Both runs were judged in the same blind session, so the review standard is "
-                  "the same for both; rates from earlier sessions are not directly comparable.")
+        caveat = ("Images: a random sample of the whole set; the rates estimate each run's error rate. Both runs "
+                  "judged in the same session; rates from other sessions are not directly comparable.")
     elif mode == "list":
         what = f"{counts} listed images"
-        caveat = ("The images are a <strong>chosen list, not a random sample</strong>: the rates describe these "
-                  "images only, not the whole set.")
+        caveat = "Images: a chosen list, not a random sample; the rates describe these images only."
     else:
         what = f'{counts} random changed images (seed {esc(stats[0]["seed"])})'
-        caveat = ("The images are a random sample of the <strong>changed</strong> images only, so the rates here "
-                  "are much higher than over the whole set.")
-    if note:
-        caveat += f" {esc(note)}"
+        caveat = "Images: a random sample of the changed images only; the rates are higher than over the whole set."
+    caveats = [reviewer_caveat(stats), "Blind: the page showed no run name or file name.",
+               caveat + (f" {note}" if note else ""),
+               "The verdict (ok / wrong) decides; categories only name the kind of error.", *cfg["caveats"]]
+    caveat_list = "<ul>\n" + "".join(f"    <li>{esc(c)}</li>\n" for c in caveats) + "  </ul>"
 
+    bodies = dict(zip(SECTIONS, (result, rates, outcomes, categories, scaling_section(stats, before, after, mode),
+                                 acceptance_section(stats, before, after, mode, max_rate), caveat_list,
+                                 f"<pre>{esc(cmd)}</pre>")))
     runs = stats[0]["runs"]
     return f"""<!doctype html>
 <html lang="en">
@@ -350,48 +426,9 @@ def render(stats, before, after, created, cmd, mode="changed", max_rate=None, no
 <main>
   <h1>Blind compare: {esc(before)} vs. {esc(after)}</h1>
   <p class="sub">{created} · {esc(before)} = {esc(Path(runs[before]).parent.name)}, {esc(after)} = {esc(Path(runs[after]).parent.name)} ·
-     {what} ·
-     blind review by Neo · NHM Wien imagery</p>
-
-  <div class="callout">{"".join(head)}</div>
-  <div class="tiles">{"".join(tiles)}</div>
-
-  <h2>What happened to each image</h2>
-  <p>Each image was judged twice, once per run, in random order without knowing the run.
-     <em>Wrong</em> = verdict fix or drop. McNemar's exact test asks whether fixed and broken images
-     could be equally likely.</p>
-  <div class="legend">{legend}</div>
-  <div class="card">{outcome_chart(stats)}
-    <details><summary>Table view</summary><div class="table-wrap"><table>
-      <tr><th>Domain</th><th>Images</th>{"".join(f"<th>{icon} {name}</th>" for _, icon, name, _, _ in OUTCOMES)}<th>McNemar</th></tr>
-      {outcome_rows}
-    </table></div></details>
-  </div>
-
-  <h2>Which errors went away, which are new</h2>
-  <p>Images with each error category (an image can have several), out of {stats[0]["n"]} per domain.
-     {f"No <code>{'</code>, <code>'.join(empty)}</code> in either run." if empty else ""}</p>
-  <div class="legend"><span><span class="sw" style="background:var(--before)"></span>{esc(before)} (before)</span>
-    <span><span class="sw" style="background:var(--after)"></span>{esc(after)} (after)</span></div>
-  <div class="facets">{facets}</div>
-  <p><em>Gone</em> = in {before}, not in {after} for the same image; <em>new</em> = the other way round.
-     New errors in {after} are the price of the fixes.</p>
-  <div class="card table-wrap"><table>
-    <tr><th>Category</th>{trans_head}</tr>{trans_rows}
-  </table></div>
-  {scale}
-
-  <h2>Caveats</h2>
-  <ul>
-    <li>One reviewer (Neo). Blind: the page showed no run name, and the fix flags are kept off the overlays.</li>
-    <li>{caveat}</li>
-    <li>The verdict (ok / wrong) is what counts; categories only say what kind of error it was.</li>
-  </ul>
-
-  <h2>Rebuild this page</h2>
-  <pre>{esc(cmd)}</pre>
-
-  <footer>Images: Naturhistorisches Museum Wien (NHM Wien), Fish Collection. Internal report, not for publication.</footer>
+     {what} · blind review</p>
+{"".join(section(t, bodies[t]) for t in SECTIONS)}
+  {page_footer(cfg)}
 </main>
 <div class="tip" id="tip"></div>
 <script>
@@ -414,7 +451,10 @@ def main():
                              "of the whole set (needs --sample), or a hand-picked list")
     parser.add_argument("--sample", type=Path, action="append",
                         help="random mode: the sample.json of each --review-dir (same order)")
-    parser.add_argument("--max-rate", type=float, help="random mode: acceptance limit for the error rate, e.g. 0.10")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
+                        help="Part-1 config: limit, caveats, labels, footer (default: %(default)s).")
+    parser.add_argument("--max-rate", type=float,
+                        help="random mode: acceptance limit for the error rate (default: the config's review.max_rate)")
     parser.add_argument("--groups", type=Path,
                         help="CSV with columns file_name,group: one row per group and domain (e.g. fin_cut / ok)")
     parser.add_argument("--note", help="one sentence for the caveats, e.g. how a list was made")
@@ -441,8 +481,13 @@ def main():
         groups = list(members.items())
     baselines = args.baseline or [None] * len(args.review_dir)
     samples = args.sample or [None] * len(args.review_dir)
-    stats = [domain_stats(d, args.before, args.after, b, smp, g)
-             for d, b, smp in zip(args.review_dir, baselines, samples) for g in groups]
+    try:
+        cfg = load_review_config(args.config)
+        stats = [domain_stats(d, args.before, args.after, b, smp, g, cfg["labels"])
+                 for d, b, smp in zip(args.review_dir, baselines, samples) for g in groups]
+    except ValueError as e:
+        raise SystemExit(str(e))
+    max_rate = (cfg["max_rate"] if args.max_rate is None else args.max_rate) if args.mode == "random" else None
     for s in stats:
         if s["n"] < s["images"]:
             print(f'Note: {s["label"]}: only {s["n"]} of {s["images"]} images judged in both runs')
@@ -450,13 +495,14 @@ def main():
                            + [f"--review-dir {d}" for d in args.review_dir]
                            + [f"--baseline {b}" for b in args.baseline or []]
                            + [f"--sample {smp}" for smp in args.sample or []]
+                           + [f"--config {args.config}"]
                            + ([f"--max-rate {args.max_rate}"] if args.max_rate is not None else [])
                            + ([f"--groups {args.groups}"] if args.groups else [])
                            + ([f"--note {json.dumps(args.note, ensure_ascii=False)}"] if args.note else [])
                            + [f"--out {args.out}"])
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(render(stats, args.before, args.after, date.today().isoformat(), cmd,
-                               args.mode, args.max_rate, args.note))
+    args.out.write_text(render(stats, cfg, args.before, args.after, date.today().isoformat(), cmd,
+                               args.mode, max_rate, args.note))
     for s in stats:
         o, rb, ra = s["outcome"], s["rates"][args.before], s["rates"][args.after]
         line = (f'{s["label"]}: wrong {pct(rb["rate"])} -> {pct(ra["rate"])}, fixed {o["fixed"]}, '

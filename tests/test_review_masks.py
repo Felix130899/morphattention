@@ -20,6 +20,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import review_masks as rm  # noqa: E402
 
+# The category set these tests judge with (any config's set works the same way).
+CATS = [{"name": n, "text": f"{n} text"} for n in ("fin_cut", "bleed", "merged", "partial", "missed_fish", "wrong_object")]
+NAMES = [c["name"] for c in CATS]
+
+
+def record(*args, **kw):
+    return rm.record_decision(*args, allowed=NAMES, **kw)
+
+
+def act(*args):
+    return rm.apply_action(*args, categories=NAMES)
+
+
+def started(review_dir):
+    """A review dir with its review.json, as review_masks.py main() starts it."""
+    review_dir.mkdir(parents=True, exist_ok=True)
+    rm.start_review(review_dir, CATS, "tester", "test-config.yaml")
+    return review_dir
+
 
 def make_run(run, raw_dir, names, flags=None):
     """A fake segment_fish.py run dir with an overlay for every name."""
@@ -56,11 +75,11 @@ def test_last_decision_wins_and_lists_follow():
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         decisions = {}
-        rm.record_decision(d, decisions, "a.jpg", "fix", ["bleed"])
-        rm.record_decision(d, decisions, "b.jpg", "drop")
-        rm.record_decision(d, decisions, "a.jpg", "ok")
-        rm.record_decision(d, decisions, "b.jpg", None)
-        rm.record_decision(d, decisions, "c.jpg", "fix", ["merged", "fin_cut"])
+        record(d, decisions, "a.jpg", "fix", ["bleed"])
+        record(d, decisions, "b.jpg", "drop")
+        record(d, decisions, "a.jpg", "ok")
+        record(d, decisions, "b.jpg", None)
+        record(d, decisions, "c.jpg", "fix", ["merged", "fin_cut"])
         assert decisions == {"a.jpg": {"verdict": "ok", "categories": []},
                              "c.jpg": {"verdict": "fix", "categories": ["fin_cut", "merged"]}}
         assert rm.load_decisions(d) == decisions  # restart sees the same state
@@ -76,7 +95,7 @@ def test_last_decision_wins_and_lists_follow():
 def test_truncated_last_line_is_ignored():
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
-        rm.record_decision(d, {}, "a.jpg", "fix")
+        record(d, {}, "a.jpg", "fix")
         with open(d / "decisions.jsonl", "a") as f:
             f.write('{"file_name": "b.jpg", "verd')
         assert rm.load_decisions(d) == {"a.jpg": {"verdict": "fix", "categories": []}}
@@ -93,7 +112,7 @@ def test_old_lines_without_categories_load():
         decisions = rm.load_decisions(d)
         assert decisions == {"a.jpg": {"verdict": "fix", "categories": []},
                              "b.jpg": {"verdict": "drop", "categories": []}}
-        rm.record_decision(d, decisions, "a.jpg", "fix", ["partial"])  # old and new lines mix
+        record(d, decisions, "a.jpg", "fix", ["partial"])  # old and new lines mix
         assert rm.load_decisions(d)["a.jpg"] == {"verdict": "fix", "categories": ["partial"]}
 
 
@@ -101,7 +120,7 @@ def test_invalid_decisions_are_refused():
     with tempfile.TemporaryDirectory() as tmp:
         for verdict, cats in [("maybe", []), ("fix", ["blurry"]), ("ok", ["bleed"]), (None, ["bleed"])]:
             try:
-                rm.record_decision(Path(tmp), {}, "a.jpg", verdict, cats)
+                record(Path(tmp), {}, "a.jpg", verdict, cats)
             except ValueError:
                 continue
             raise AssertionError(f"expected ValueError for {verdict!r} {cats!r}")
@@ -112,23 +131,23 @@ def test_toggle_categories_and_verdict_derivation():
     assert rm.derive_verdict([]) == "ok"
     assert rm.derive_verdict(["bleed"]) == "fix"
     assert rm.derive_verdict([], drop=True) == rm.derive_verdict(["bleed"], drop=True) == "drop"
-    d = rm.apply_action(None, "toggle", "merged")  # unjudged + category -> fix
+    d = act(None, "toggle", "merged")  # unjudged + category -> fix
     assert d == {"verdict": "fix", "categories": ["merged"]}
-    d = rm.apply_action(d, "toggle", "fin_cut")  # several allowed, kept in key order
+    d = act(d, "toggle", "fin_cut")  # several allowed, kept in key order
     assert d == {"verdict": "fix", "categories": ["fin_cut", "merged"]}
-    d = rm.apply_action(rm.apply_action(d, "toggle", "merged"), "toggle", "fin_cut")
+    d = act(act(d, "toggle", "merged"), "toggle", "fin_cut")
     assert d == {"verdict": "ok", "categories": []}  # all toggled off -> ok
-    assert rm.apply_action(None, "fix") == {"verdict": "fix", "categories": []}  # f without category
-    drop = rm.apply_action(rm.apply_action(None, "toggle", "partial"), "drop")
+    assert act(None, "fix") == {"verdict": "fix", "categories": []}  # f without category
+    drop = act(act(None, "toggle", "partial"), "drop")
     assert drop == {"verdict": "drop", "categories": ["partial"]}  # drop keeps categories
-    assert rm.apply_action(drop, "toggle", "bleed")["verdict"] == "drop"
-    assert rm.apply_action(rm.apply_action(drop, "toggle", "partial"), "toggle", "bleed")["verdict"] == "drop"
-    assert rm.apply_action(drop, "fix") == {"verdict": "fix", "categories": ["partial"]}
-    assert rm.apply_action(drop, "ok") == {"verdict": "ok", "categories": []}
-    assert rm.apply_action(drop, "clear") is None
+    assert act(drop, "toggle", "bleed")["verdict"] == "drop"
+    assert act(act(drop, "toggle", "partial"), "toggle", "bleed")["verdict"] == "drop"
+    assert act(drop, "fix") == {"verdict": "fix", "categories": ["partial"]}
+    assert act(drop, "ok") == {"verdict": "ok", "categories": []}
+    assert act(drop, "clear") is None
     for bad in [("toggle", "blurry"), ("maybe", None)]:
         try:
-            rm.apply_action(None, *bad)
+            act(None, *bad)
         except ValueError:
             continue
         raise AssertionError(f"expected ValueError for {bad}")
@@ -215,14 +234,14 @@ def test_compare_decisions_and_summary():
         runs = [("base", make_run(tmp / "base", tmp / "raw", ["a.jpg", "b.jpg", "c.jpg"])),
                 ("new", make_run(tmp / "new", tmp / "raw", ["a.jpg", "b.jpg", "c.jpg"]))]
         review = tmp / "review"
-        review.mkdir()
+        started(review)
         items = rm.order_items(review, rm.build_compare_items(runs), 0, runs)
         idx = {(it["run"], it["file_name"]): k for k, it in enumerate(items)}
         decisions = {}
 
         def judge(run, name, verdict, cats=()):
             k = idx[(run, name)]
-            rm.record_compare_decision(review, decisions, k, items[k], verdict, list(cats))
+            rm.record_compare_decision(review, decisions, k, items[k], verdict, list(cats), allowed=NAMES)
 
         judge("base", "a.jpg", "fix", ["fin_cut", "bleed"])
         judge("new", "a.jpg", "ok")
@@ -258,7 +277,7 @@ def test_compare_decisions_and_summary():
 
 def test_compare_load_refuses_single_run_review_dir():
     with tempfile.TemporaryDirectory() as tmp:
-        rm.record_decision(Path(tmp), {}, "a.jpg", "fix")
+        record(Path(tmp), {}, "a.jpg", "fix")
         try:
             rm.load_decisions(Path(tmp), compare=True)
         except ValueError:
@@ -275,10 +294,10 @@ def test_compare_server_never_reveals_the_run():
         runs = [("SECRETRUNALPHA", make_run(tmp / "dir_alpha_xyz", raw, ["fish1.jpg"], {"fish1.jpg": ["tiny"]})),
                 ("SECRETRUNBETA", make_run(tmp / "dir_beta_xyz", raw, ["fish1.jpg"]))]
         review = tmp / "review"
-        review.mkdir()
+        started(review)
         items = rm.order_items(review, rm.build_compare_items(runs), 0, runs)
         decisions = {}
-        server = serve(rm.make_handler(items, decisions, review, threading.Lock(), compare=True))
+        server = serve(rm.make_handler(items, decisions, review, threading.Lock(), compare=True, categories=CATS))
         fetch = lambda path, body=None: http_fetch(server, path, body)  # noqa: E731
         try:
             responses = [fetch("/"), fetch("/overlay/0"), fetch("/overlay/1"), fetch("/raw/0"),
@@ -311,10 +330,10 @@ def test_single_run_server_still_works():
         tmp = Path(tmp)
         run = make_run(tmp / "run", tmp / "raw", ["a.jpg", "b.jpg"], {"b.jpg": ["tiny"]})
         review = run / "review"
-        review.mkdir()
-        rm.record_decision(review, {}, "a.jpg", "fix")  # an old-style line from an earlier session
+        started(review)
+        record(review, {}, "a.jpg", "fix")  # an old-style line from an earlier session
         items, decisions = rm.load_items(run), rm.load_decisions(review)
-        server = serve(rm.make_handler(items, decisions, review, threading.Lock()))
+        server = serve(rm.make_handler(items, decisions, review, threading.Lock(), categories=CATS))
         try:
             state = json.loads(http_fetch(server, "/api/state")[2])
             assert state["compare"] is False
@@ -344,7 +363,7 @@ def test_sample_is_seeded_saved_grows_and_refuses_changes():
         names = [f"f{k:02d}.jpg" for k in range(20)]
         run = make_run(tmp / "run", tmp / "raw", names)
         review = tmp / "review"
-        review.mkdir()
+        started(review)
         items = rm.load_items(run)
         first = [it["file_name"] for it in rm.draw_sample(review, items, 5, 0, run)]
         expected = sorted(names)
@@ -372,7 +391,7 @@ def test_sample_excludes_dropped_and_skipped():
         recs[1]["status"], recs[2]["status"] = "dropped", "skipped"
         (run / "annotations.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         review = tmp / "review"
-        review.mkdir()
+        started(review)
         assert [it["file_name"] for it in rm.draw_sample(review, rm.load_items(run), 1, 0, run)] == ["a.jpg"]
 
 
@@ -386,7 +405,7 @@ def test_sample_exclude_list_is_left_out_saved_and_enforced_on_resume():
         old = rm.draw_sample(tmp / "old", items, 5, 0, run)
         exclude = [it["file_name"] for it in old] + ["gone.jpg"]  # gone.jpg: not in this run
         review = tmp / "review"
-        review.mkdir()
+        started(review)
         new = [it["file_name"] for it in rm.draw_sample(review, items, 15, 1, run, exclude)]
         assert sorted(new) == sorted(set(names) - set(exclude))  # whole rest, nothing excluded
         expected = sorted(set(names) - set(exclude))
@@ -415,14 +434,14 @@ def test_sample_summary_counts_drops_as_errors():
         tmp = Path(tmp)
         run = make_run(tmp / "run", tmp / "raw", [f"f{k}.jpg" for k in range(10)])
         review = tmp / "review"
-        review.mkdir()
+        started(review)
         items = rm.draw_sample(review, rm.load_items(run), 4, 0, run)
         decisions = {}
-        rm.record_decision(review, decisions, items[0]["file_name"], "ok")
-        rm.record_decision(review, decisions, items[1]["file_name"], "fix", ["bleed", "fin_cut"])
-        rm.record_decision(review, decisions, items[2]["file_name"], "drop", ["wrong_object"])
+        record(review, decisions, items[0]["file_name"], "ok")
+        record(review, decisions, items[1]["file_name"], "fix", ["bleed", "fin_cut"])
+        record(review, decisions, items[2]["file_name"], "drop", ["wrong_object"])
         outside = next(n for n in (f"f{k}.jpg" for k in range(10)) if n not in {it["file_name"] for it in items})
-        rm.record_decision(review, decisions, outside, "fix", ["bleed"])  # not in the sample: ignored
+        record(review, decisions, outside, "fix", ["bleed"])  # not in the sample: ignored
         row = rm.summarize_sample(review)
         assert (row["sample"], row["judged"], row["ok"], row["fix"], row["drop"]) == (4, 3, 1, 1, 1)
         assert row["error_rate"] == "0.6667" and row["bleed"] == 1 and row["wrong_object"] == 1
@@ -435,11 +454,11 @@ def test_sample_server_is_blind_but_saves_by_file_name():
         tmp = Path(tmp)
         run = make_run(tmp / "run", tmp / "raw", ["zanderA.jpg", "zanderB.jpg"], {"zanderB.jpg": ["giant"]})
         review = tmp / "review"
-        review.mkdir()
-        rm.record_decision(review, {}, "zanderB.jpg", "fix", ["bleed"])
+        started(review)
+        record(review, {}, "zanderB.jpg", "fix", ["bleed"])
         items = rm.draw_sample(review, rm.load_items(run), 2, 0, run)
         decisions = rm.load_decisions(review)
-        server = serve(rm.make_handler(items, decisions, review, threading.Lock(), blind=True))
+        server = serve(rm.make_handler(items, decisions, review, threading.Lock(), blind=True, categories=CATS))
         try:
             responses = [http_fetch(server, "/"), http_fetch(server, "/api/state"),
                          http_fetch(server, "/api/decide", {"item": 0, "action": "drop"}),
@@ -457,6 +476,82 @@ def test_sample_server_is_blind_but_saves_by_file_name():
         assert state["items"] == [{"key": "0"}, {"key": "1"}]
         assert state["decisions"] == {b_idx: {"verdict": "fix", "categories": ["bleed"]}}
         assert rm.load_decisions(review)[items[0]["file_name"]]["verdict"] == "drop"
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def write_config(path, categories, max_rate=0.1):
+    import yaml
+    path.write_text(yaml.safe_dump({"review": {"max_rate": max_rate, "categories": categories}}))
+    return path
+
+
+def test_review_config_of_both_repo_configs_and_refusals():
+    neutral = rm.load_review_config(REPO / "pipeline" / "config.yaml")
+    thesis = rm.load_review_config(REPO / "pipeline" / "config_thesis_nhm.yaml")
+    assert [c["name"] for c in neutral["categories"]] == ["bleed", "wrong_object", "merged", "partial",
+                                                          "missed_object", "missing_part"]
+    assert [c["name"] for c in thesis["categories"]] == NAMES  # the names in every recorded thesis decision
+    assert neutral["attribution"] is None and "NHM" in thesis["attribution"]
+    assert thesis["labels"] == {"full_body": "Photos", "Röntgen": "X-rays"} and thesis["max_rate"] == 0.1
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        ok = {"name": "missing_fin", "text": "a fin missing"}
+        assert rm.load_review_config(write_config(tmp / "a.yaml", [ok]))["categories"][0]["fixes"] == []
+        for cats, why in [([{"name": f"c{k}", "text": "t"} for k in range(10)], "at most 9"),
+                          ([{"name": "Fin Cut", "text": "t"}], "lowercase"),
+                          ([ok, ok], "twice"),
+                          ([{"name": "x"}], "no text"),
+                          ([{**ok, "fixes": [{"setting": "mask_threshold", "turn": "lower"}]}], "setting, turn and cost"),
+                          ([], "no review.categories")]:
+            msg = expect_value_error(rm.load_review_config, write_config(tmp / "b.yaml", cats))
+            assert why in msg, (why, msg)
+        import yaml
+        (tmp / "c.yaml").write_text(yaml.safe_dump({"review": {"categories": [ok]}}))
+        assert "max_rate" in expect_value_error(rm.load_review_config, tmp / "c.yaml")
+
+
+def test_review_json_is_written_once_and_guards_the_categories():
+    with tempfile.TemporaryDirectory() as tmp:
+        review = Path(tmp) / "review"
+        review.mkdir()
+        assert "--reviewer" in expect_value_error(rm.start_review, review, CATS, None, "c.yaml")
+        rm.start_review(review, CATS, "Neo", "c.yaml")
+        meta = rm.read_review_meta(review)
+        assert meta["categories"] == CATS and meta["reviewers"] == ["Neo"] and rm.category_names(review) == NAMES
+        rm.start_review(review, CATS, None, "c.yaml")  # resume without --reviewer
+        rm.start_review(review, CATS, "Ana", "c.yaml")  # a second reviewer is added
+        assert rm.read_review_meta(review)["reviewers"] == ["Neo", "Ana"]
+        for other in (CATS[::-1], CATS[:-1], CATS + [{"name": "missing_fin", "text": "t"}]):
+            assert "started with the categories" in expect_value_error(rm.start_review, review, other, "Neo", "d.yaml")
+        old = Path(tmp) / "old"
+        old.mkdir()
+        rm.record_decision(old, {}, "a.jpg", "fix", allowed=NAMES)  # decisions, but no review.json
+        assert "no review.json" in expect_value_error(rm.start_review, old, CATS, "Neo", "c.yaml")
+        assert "review.json missing" in expect_value_error(rm.category_names, old)
+
+
+def test_own_categories_reach_the_page_and_the_decisions():
+    own = [{"name": "missing_tail", "text": "tail cut off"}, {"name": "bleed", "text": "background in the mask"}]
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        run = make_run(tmp / "run", tmp / "raw", ["a.jpg"])
+        review = run / "review"
+        review.mkdir()
+        rm.start_review(review, own, "Neo", "own.yaml")
+        server = serve(rm.make_handler(rm.load_items(run), {}, review, threading.Lock(), categories=own))
+        try:
+            state = json.loads(http_fetch(server, "/api/state")[2])
+            ok = http_fetch(server, "/api/decide", {"item": 0, "action": "toggle", "category": "missing_tail"})[0]
+            unknown = http_fetch(server, "/api/decide", {"item": 0, "action": "toggle", "category": "fin_cut"})[0]
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert state["categories"] == ["missing_tail", "bleed"]
+        assert state["category_text"] == ["tail cut off", "background in the mask"]
+        assert (ok, unknown) == (200, 400)
+        assert rm.load_decisions(review) == {"a.jpg": {"verdict": "fix", "categories": ["missing_tail"]}}
 
 
 if __name__ == "__main__":

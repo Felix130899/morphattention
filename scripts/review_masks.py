@@ -5,8 +5,8 @@ forwards the port to your browser) that shows one overlay at a time:
 
     ->  / Space   next (an image you haven't judged yet is recorded as "ok")
     <-            previous
-    1 - 6         toggle an error category (several allowed), stays on the image:
-                  1 fin_cut  2 bleed  3 merged  4 partial  5 missed_fish  6 wrong_object
+    1 - 9         toggle an error category (several allowed), stays on the image;
+                  the categories are the config's review.categories, in that order
     f             "fix"  - then next; without a category it stays and asks for one
                   (-> goes on without)
     x             "drop" - image unusable for training (not fixable), then next;
@@ -19,9 +19,17 @@ Verdict rule (vault/thesis-log/decisions/2026-10-01-mask-policy.md): no
 category and not dropped -> ok, any category -> fix, x -> drop (with or
 without categories). Toggling a category on a dropped image keeps it dropped.
 
+Categories come from ``--config`` (default ``pipeline/config.yaml``, block
+``review.categories``, at most 9). Every review dir records them, with who
+judged, in ``review.json`` when it is started (``--reviewer NAME`` is needed
+then); a resume whose config has other category names (or another order) is
+refused, so the decisions of one review dir always mean the same thing. The
+reports read the categories from review.json, not from the config.
+
 Single-run mode: every keypress is saved immediately to ``<run-dir>/review/``
 (or ``--review-dir``):
 
+    review.json       categories (name + text, key order), reviewers, config, created
     decisions.jsonl   one line per keypress {file_name, verdict, categories, time},
                       the last line per image wins (append-only, so a crash or
                       Ctrl+C loses nothing; old lines without categories load as [])
@@ -34,9 +42,12 @@ and are not shown - they are already listed in ``<run-dir>/skipped.txt``.
 The image list is read once at startup, so restart to pick up images a still
 running segmentation has added since.
 
-    python scripts/review_masks.py --run-dir data/processed/segmented/full_body
-    python scripts/review_masks.py --run-dir data/processed/segmented/Röntgen --flagged-only
-    python scripts/review_masks.py --run-dir data/processed/segmented/full_body --image-list dev_set.txt
+    python scripts/review_masks.py --run-dir data/processed/segmented/my_run/photos --reviewer Ana
+    python scripts/review_masks.py --run-dir data/processed/segmented/my_run/photos --flagged-only
+    python scripts/review_masks.py --run-dir data/processed/segmented/my_run/photos --image-list dev_set.txt
+
+The thesis reviews (NHM Wien) were judged with the thesis categories, so they
+resume only with ``--config pipeline/config_thesis_nhm.yaml``.
 
 ``--image-list`` (both modes): one file name per line - the COCO/annotations
 ``file_name`` (e.g. ``sub/a.png``) or the overlay name (``a.jpg``); blank lines
@@ -62,7 +73,7 @@ served by item index. Results go to ``--review-dir`` only, never into a run:
         --compare thr05=data/processed/segmented/dev_thr05 \\
         --compare thr07=data/processed/segmented/dev_thr07 \\
         --compare marg=data/processed/segmented/dev_margin \\
-        --image-list dev_set.txt --review-dir data/processed/segmented/review_dev --seed 0
+        --image-list dev_set.txt --review-dir data/processed/segmented/review_dev --seed 0 --reviewer Ana
     python scripts/review_masks.py --summary --review-dir data/processed/segmented/review_dev
 
 ``--summary`` (no server) prints per run: items, judged, ok, fix, drop,
@@ -92,9 +103,9 @@ used for tuning. sample.json stores the list's sha256 and size; a resume with
 another (or no) exclude list is refused, so pass the same ``--exclude`` again.
 
     python scripts/review_masks.py --run-dir data/processed/segmented/B_merged_2026-10-03/Röntgen \\
-        --sample 300 --seed 0
+        --sample 300 --seed 0 --config pipeline/config_thesis_nhm.yaml --reviewer Neo
     python scripts/review_masks.py --run-dir data/processed/segmented/D_merged_2026-10-05/Röntgen \\
-        --sample 300 --seed 1 \\
+        --sample 300 --seed 1 --config pipeline/config_thesis_nhm.yaml --reviewer Neo \\
         --exclude data/processed/segmented/B_merged_2026-10-03/Röntgen/review_random_seed0/sample_names.txt
     python scripts/review_masks.py --summary \\
         --review-dir data/processed/segmented/B_merged_2026-10-03/Röntgen/review_random_seed0
@@ -111,16 +122,90 @@ import hashlib
 import json
 import math
 import random
+import re
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import yaml
+
 VERDICTS = ("ok", "fix", "drop")
-# Number keys 1-6 on the page, in this order. Meanings: mask policy (see docstring).
-CATEGORIES = ("fin_cut", "bleed", "merged", "partial", "missed_fish", "wrong_object")
 ACTIONS = ("ok", "fix", "drop", "clear", "toggle")
 WORKSPACE = Path("/workspace")
+DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "pipeline" / "config.yaml"
+MAX_CATEGORIES = 9  # number keys 1-9 on the page
+CATEGORY_NAME = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def load_review_config(path):
+    """What the review and its reports take from a part-1 config: the
+    categories [{name, text, highlight, fixes}] in key order, max_rate,
+    caveats, domain labels and the attribution line. Refuses a broken
+    category list."""
+    cfg = yaml.safe_load(Path(path).read_text()) or {}
+    review = cfg.get("review") or {}
+    cats = review.get("categories") or []
+    problems = []
+    if not cats:
+        problems.append("no review.categories")
+    if len(cats) > MAX_CATEGORIES:
+        problems.append(f"{len(cats)} categories, at most {MAX_CATEGORIES} (keys 1-9)")
+    names = [c.get("name") for c in cats]
+    problems += [f"category name {n!r}: lowercase letters, digits, _" for n in names
+                 if not isinstance(n, str) or not CATEGORY_NAME.fullmatch(n)]
+    problems += [f"category {n!r} twice" for n in sorted({n for n in names if names.count(n) > 1}, key=str)]
+    problems += [f"category {c.get('name')!r} has no text" for c in cats if not c.get("text")]
+    problems += [f"category {c.get('name')!r}: a fix needs setting, turn and cost" for c in cats
+                 for f in c.get("fixes") or [] if not all(f.get(k) for k in ("setting", "turn", "cost"))]
+    if "max_rate" not in review:
+        problems.append("no review.max_rate")
+    if problems:
+        raise ValueError(f"{path}: " + "; ".join(problems))
+    return {"categories": [{"name": c["name"], "text": str(c["text"]), "highlight": bool(c.get("highlight")),
+                            "fixes": [{k: str(f[k]) for k in ("setting", "turn", "cost")} for f in c.get("fixes") or []]}
+                           for c in cats],
+            "max_rate": float(review["max_rate"]), "caveats": [str(c) for c in review.get("caveats") or []],
+            "labels": {d: (v or {}).get("label") or d for d, v in (cfg.get("domains") or {}).items()},
+            "attribution": cfg.get("attribution"), "path": str(path)}
+
+
+def read_review_meta(review_dir):
+    """review.json of a review dir: {categories: [{name, text}] in key order, reviewers, config, created}."""
+    path = Path(review_dir) / "review.json"
+    if not path.exists():
+        raise ValueError(f"{path} missing: not a review dir, or one made before review.json existed (2026-10-11)")
+    return json.loads(path.read_text())
+
+
+def category_names(review_dir):
+    """The categories a review dir was judged with, in key order."""
+    return [c["name"] for c in read_review_meta(review_dir)["categories"]]
+
+
+def start_review(review_dir, categories, reviewer, config_path):
+    """Write review.json for a new review dir. For an existing one, check its
+    categories are the config's (same names, same order) and add a new reviewer."""
+    path = Path(review_dir) / "review.json"
+    names = [c["name"] for c in categories]
+    if path.exists():
+        meta = json.loads(path.read_text())
+        had = [c["name"] for c in meta["categories"]]
+        if had != names:
+            raise ValueError(f"{review_dir} was started with the categories {had}; {config_path} has {names}. "
+                             "Use the config it was started with, or a new --review-dir")
+        if reviewer and reviewer not in meta["reviewers"]:
+            meta["reviewers"].append(reviewer)
+            path.write_text(json.dumps(meta, indent=1, ensure_ascii=False))
+        return meta
+    if (Path(review_dir) / "decisions.jsonl").exists():
+        raise ValueError(f"{review_dir} has decisions but no review.json; use a new --review-dir")
+    if not reviewer:
+        raise ValueError("--reviewer NAME is needed to start a review (it is saved in review.json)")
+    meta = {"categories": [{"name": c["name"], "text": c["text"]} for c in categories], "reviewers": [reviewer],
+            "config": str(config_path), "created": datetime.now().isoformat(timespec="seconds")}
+    path.write_text(json.dumps(meta, indent=1, ensure_ascii=False))
+    return meta
 
 
 def read_image_list(path):
@@ -171,10 +256,11 @@ def derive_verdict(categories, drop=False):
     return "fix" if categories else "ok"
 
 
-def apply_action(current, action, category=None):
+def apply_action(current, action, category=None, *, categories):
     """The decision after one keypress on an image whose decision is ``current``.
 
-    Decisions are {"verdict", "categories"} or None (unjudged / cleared).
+    Decisions are {"verdict", "categories"} or None (unjudged / cleared);
+    ``categories``: the review's category names in key order.
     """
     if action not in ACTIONS:
         raise ValueError(f"unknown action {action!r}")
@@ -183,9 +269,9 @@ def apply_action(current, action, category=None):
     verdict = current["verdict"] if current else None
     cats = list(current["categories"]) if current else []
     if action == "toggle":
-        if category not in CATEGORIES:
+        if category not in categories:
             raise ValueError(f"unknown category {category!r}")
-        cats = [c for c in CATEGORIES if (c in cats) != (c == category)]
+        cats = [c for c in categories if (c in cats) != (c == category)]
         verdict = derive_verdict(cats, drop=verdict == "drop")
     elif action == "ok":
         verdict, cats = "ok", []
@@ -194,16 +280,17 @@ def apply_action(current, action, category=None):
     return {"verdict": verdict, "categories": cats}
 
 
-def check_decision(verdict, categories):
-    """Validate one decision; returns the categories deduplicated in key order."""
+def check_decision(verdict, categories, allowed):
+    """Validate one decision against the review's category names ``allowed``;
+    returns the categories deduplicated in key order."""
     if verdict is not None and verdict not in VERDICTS:
         raise ValueError(f"unknown verdict {verdict!r}")
-    unknown = [c for c in categories if c not in CATEGORIES]
+    unknown = [c for c in categories if c not in allowed]
     if unknown:
         raise ValueError(f"unknown category {unknown[0]!r}")
     if categories and verdict in ("ok", None):
         raise ValueError(f"categories need verdict fix or drop, got {verdict!r}")
-    return [c for c in CATEGORIES if c in categories]
+    return [c for c in allowed if c in categories]
 
 
 def load_decisions(review_dir, compare=False):
@@ -244,9 +331,9 @@ def _update(decisions, key, verdict, categories):
         decisions[key] = {"verdict": verdict, "categories": categories}
 
 
-def record_decision(review_dir, decisions, file_name, verdict, categories=()):
+def record_decision(review_dir, decisions, file_name, verdict, categories=(), *, allowed):
     """Single-run mode: append one decision, rewrite fix.txt / drop.txt / categories.csv."""
-    categories = check_decision(verdict, categories)
+    categories = check_decision(verdict, categories, allowed)
     _append(review_dir, {"file_name": file_name, "verdict": verdict, "categories": categories})
     _update(decisions, file_name, verdict, categories)
     for v in ("fix", "drop"):
@@ -259,9 +346,9 @@ def record_decision(review_dir, decisions, file_name, verdict, categories=()):
             w.writerow([name, decisions[name]["verdict"], ";".join(decisions[name]["categories"])])
 
 
-def record_compare_decision(review_dir, decisions, idx, item, verdict, categories=()):
+def record_compare_decision(review_dir, decisions, idx, item, verdict, categories=(), *, allowed):
     """Compare mode: append one decision for item ``idx`` (decisions keyed by idx)."""
-    categories = check_decision(verdict, categories)
+    categories = check_decision(verdict, categories, allowed)
     _append(review_dir, {"item": idx, "run": item["run"], "file_name": item["file_name"],
                          "verdict": verdict, "categories": categories})
     _update(decisions, idx, verdict, categories)
@@ -364,12 +451,13 @@ def wilson(k, n, z=1.96):
 
 
 def summarize_sample(review_dir):
-    """Counts, error rate (fix + drop) / judged with Wilson interval, per category."""
+    """Counts, error rate (fix + drop) / judged with Wilson interval, per category
+    (the categories of the dir's review.json)."""
     saved = json.loads((review_dir / "sample.json").read_text())
     decisions = load_decisions(review_dir)
     row = {"run_dir": saved["run_dir"], "seed": saved["seed"], "population": saved["population"],
            "sample": saved["n"], "judged": 0, **{v: 0 for v in VERDICTS},
-           "error_rate": "", "ci_low": "", "ci_high": "", **{c: 0 for c in CATEGORIES}}
+           "error_rate": "", "ci_low": "", "ci_high": "", **{c: 0 for c in category_names(review_dir)}}
     for name in saved["sample"]:
         d = decisions.get(name)
         if d is None:
@@ -393,7 +481,7 @@ def print_sample_summary(review_dir):
     if row["judged"]:
         print(f"error rate (fix + drop) / judged = {float(row['error_rate']):.1%}  "
               f"95 % Wilson CI {float(row['ci_low']):.1%} - {float(row['ci_high']):.1%}")
-    print("categories: " + "  ".join(f"{c} {row[c]}" for c in CATEGORIES))
+    print("categories: " + "  ".join(f"{c} {row[c]}" for c in category_names(review_dir)))
     with open(review_dir / "summary.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(row))
         w.writeheader()
@@ -406,10 +494,11 @@ def summarize(review_dir):
     saved = json.loads((review_dir / "order.json").read_text())
     order = [tuple(k) for k in saved["items"]]
     decisions = load_decisions(review_dir, compare=True)
+    names = category_names(review_dir)
     rows = []
     for run in saved["runs"]:
         row = {"run": run, "items": sum(r == run for r, _ in order), "judged": 0,
-               **{v: 0 for v in VERDICTS}, "fix_rate": "", **{c: 0 for c in CATEGORIES}}
+               **{v: 0 for v in VERDICTS}, "fix_rate": "", **{c: 0 for c in names}}
         for key in order:
             d = decisions.get(key)
             if key[0] != run or d is None:
@@ -436,7 +525,7 @@ def _fmt(d):
 
 def print_summary(review_dir):
     rows, disagree = summarize(review_dir)
-    cols = ["run", "items", "judged", *VERDICTS, "fix_rate", *CATEGORIES]
+    cols = ["run", "items", "judged", *VERDICTS, "fix_rate", *category_names(review_dir)]
     widths = [max(len(c), *(len(str(r[c])) for r in rows)) for c in cols]
     for line in [dict(zip(cols, cols))] + rows:
         print("  ".join(str(line[c]).ljust(w) if c == "run" else str(line[c]).rjust(w)
@@ -482,17 +571,19 @@ PAGE = """<!doctype html>
   <span id="name"></span><span id="flags"></span></header>
 <main><img id="img" alt=""></main>
 <footer><span id="counts"></span>
-  <span><kbd>&rarr;</kbd>/<kbd>Space</kbd> next (ok) &nbsp; <kbd>&larr;</kbd> back &nbsp; <kbd>1</kbd>-<kbd>6</kbd> category &nbsp;
+  <span><kbd>&rarr;</kbd>/<kbd>Space</kbd> next (ok) &nbsp; <kbd>&larr;</kbd> back &nbsp; <kbd>1</kbd>-<kbd id="lastcat">9</kbd> category &nbsp;
   <kbd>f</kbd> fix &nbsp; <kbd>x</kbd> drop &nbsp; <kbd>u</kbd> clear &nbsp; <kbd>n</kbd> next unjudged &nbsp;
   hold <kbd>r</kbd> raw</span></footer>
 <script>
-let items = [], decisions = {}, cats = [], blind = false, i = 0, showRaw = false, hint = '';
+let items = [], decisions = {}, cats = [], catText = [], blind = false, i = 0, showRaw = false, hint = '';
 const $ = id => document.getElementById(id);
 
 async function load() {
   const s = await (await fetch('/api/state')).json();
-  items = s.items; decisions = s.decisions; cats = s.categories; blind = s.blind;
+  items = s.items; decisions = s.decisions; cats = s.categories; catText = s.category_text; blind = s.blind;
   $('legend').innerHTML = cats.map((c, k) => `<span id="cat${k}"><kbd>${k + 1}</kbd> ${c}</span>`).join('');
+  cats.forEach((c, k) => { $('cat' + k).title = catText[k]; });
+  $('lastcat').textContent = cats.length;
   i = items.findIndex(it => !(it.key in decisions));
   if (i < 0) i = 0;
   show();
@@ -551,7 +642,7 @@ async function onKey(e) {
   } else if (k === 'f') {
     if (e.repeat || !(await act('fix'))) return;
     if (decisions[key].categories.length) go(1);
-    else { hint = 'fix without category: press 1-6 to add one, \\u2192 to go on'; show(); }
+    else { hint = `fix without category: press 1-${cats.length} to add one, \\u2192 to go on`; show(); }
   } else if (k === 'x') {
     if (e.repeat) return;
     if (await act('drop')) go(1);
@@ -568,11 +659,13 @@ load();
 """
 
 
-def make_handler(items, decisions, review_dir, lock, compare=False, blind=False):
+def make_handler(items, decisions, review_dir, lock, compare=False, blind=False, *, categories):
     """HTTP handler. In compare mode (and with ``blind``) nothing image- or
     run-specific (run name, dir, path, file name, QA flags, fish count) ever
-    leaves the server: items are addressed by index."""
+    leaves the server: items are addressed by index. ``categories``: the
+    review's [{name, text}] in key order."""
     blind = blind or compare
+    names = [c["name"] for c in categories]
     if blind:
         public_items = [{"key": str(k)} for k in range(len(items))]
     else:
@@ -605,7 +698,8 @@ def make_handler(items, decisions, review_dir, lock, compare=False, blind=False)
             if self.path == "/api/state":
                 with lock:
                     public = {public_key(k): d for k, d in decisions.items() if compare or not blind or k in index_of}
-                    state = {"compare": compare, "blind": blind, "categories": CATEGORIES, "items": public_items,
+                    state = {"compare": compare, "blind": blind, "categories": names,
+                             "category_text": [c["text"] for c in categories], "items": public_items,
                              "decisions": public}
                     body = json.dumps(state).encode()
                 return self._send(body, "application/json")
@@ -626,12 +720,13 @@ def make_handler(items, decisions, review_dir, lock, compare=False, blind=False)
                 if not isinstance(idx, int) or not 0 <= idx < len(items):
                     raise ValueError("unknown item")
                 with lock:
-                    new = apply_action(decisions.get(key_of(idx)), body["action"], body.get("category"))
+                    new = apply_action(decisions.get(key_of(idx)), body["action"], body.get("category"),
+                                       categories=names)
                     verdict, cats = (new["verdict"], new["categories"]) if new else (None, [])
                     if compare:
-                        record_compare_decision(review_dir, decisions, idx, items[idx], verdict, cats)
+                        record_compare_decision(review_dir, decisions, idx, items[idx], verdict, cats, allowed=names)
                     else:
-                        record_decision(review_dir, decisions, items[idx]["file_name"], verdict, cats)
+                        record_decision(review_dir, decisions, items[idx]["file_name"], verdict, cats, allowed=names)
             except (ValueError, KeyError, TypeError) as e:
                 return self._send(f"bad request: {type(e).__name__} {e}".encode(), "text/plain", 400)
             except OSError:  # message would contain the review dir path
@@ -670,6 +765,10 @@ def main():
                         help="Print the per-run table of a compare --review-dir and write summary.csv; no server.")
     parser.add_argument("--flagged-only", action="store_true",
                         help="Single-run mode: only show images with at least one QA flag (multi_instance, tiny, ...).")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
+                        help="Part-1 config whose review.categories are the keys 1-9 (default: %(default)s). "
+                             "Only read when a review is started or resumed.")
+    parser.add_argument("--reviewer", help="Who judges; needed to start a review dir, saved in its review.json.")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
@@ -693,6 +792,16 @@ def main():
     elif args.run_dir and args.review_dir and (args.review_dir / "sample.json").exists():
         parser.error(f"{args.review_dir} is a random-sample review; resume it with --sample N")
     wanted = set(read_image_list(args.image_list)) if args.image_list else None
+    try:
+        categories = load_review_config(args.config)["categories"]
+    except ValueError as e:
+        raise SystemExit(str(e))
+
+    def start(review_dir):
+        try:
+            start_review(review_dir, categories, args.reviewer, args.config)
+        except ValueError as e:
+            raise SystemExit(str(e))
 
     if args.compare:
         runs = args.compare
@@ -710,6 +819,7 @@ def main():
                 parser.error("--review-dir must not be inside a run dir")
         review_dir = args.review_dir
         review_dir.mkdir(parents=True, exist_ok=True)
+        start(review_dir)
         try:
             items = order_items(review_dir, build_compare_items(runs, wanted), args.seed, runs)
             saved = load_decisions(review_dir, compare=True)
@@ -726,6 +836,7 @@ def main():
         if (review_dir / "order.json").exists() or (
                 (review_dir / "decisions.jsonl").exists() and not (review_dir / "sample.json").exists()):
             raise SystemExit(f"{review_dir} already holds a non-sample review; use a new --review-dir")
+        start(review_dir)
         population = load_items(args.run_dir)
         exclude = read_image_list(args.exclude) if args.exclude else None
         try:
@@ -744,6 +855,7 @@ def main():
         items = load_items(args.run_dir, args.flagged_only, wanted)
         review_dir = args.review_dir or args.run_dir / "review"
         review_dir.mkdir(parents=True, exist_ok=True)
+        start(review_dir)
         decisions = load_decisions(review_dir)
         judged = sum(it["file_name"] in decisions for it in items)
         print(f"{len(items)} images to review, {judged} already judged. Decisions -> {review_dir}/")
@@ -756,7 +868,7 @@ def main():
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port),
                                  make_handler(items, decisions, review_dir, threading.Lock(), bool(args.compare),
-                                              blind=args.sample is not None))
+                                              blind=args.sample is not None, categories=categories))
     print(f"Open http://localhost:{args.port}  (Ctrl+C to stop - every keypress is already saved)")
     try:
         server.serve_forever()
