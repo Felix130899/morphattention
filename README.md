@@ -3,7 +3,7 @@ Explainability analysis of ViT attention maps on fish morphological features.
 
 ## Setup (Docker)
 
-Needs Docker with Compose v2 (`docker compose`) and, for the GPU, the NVIDIA Container Toolkit on the host.
+Needs Docker with Compose v2 or later (the `docker compose` plugin; it is numbered v5 since late 2025) and, for the GPU, the NVIDIA Container Toolkit on the host.
 In the cloned repo:
 
 ```bash

@@ -32,7 +32,7 @@ services:
       # so everything persists across container rebuilds.
       - .:/workspace
     # GPU: needs the NVIDIA Container Toolkit on the host and Docker Compose v2
-    # (`docker compose`, not the old `docker-compose`). No GPU: see the
+    # or later (`docker compose`, not the old Python `docker-compose`). No GPU: see the
     # override example.
     deploy:
       resources:
