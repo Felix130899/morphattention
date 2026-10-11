@@ -18,7 +18,7 @@ XAI on ViT attention maps for fish morphology (NHM Wien imagery)
 
 ## Next steps
 1. Neo: supervisor talk on §3. After it: accepted → delete the 3 `PENDING_SUPERVISOR.txt` (segmented/split/manifest `D_final_2026-10-09*`) and the pending note in vault/thesis-log/decisions/2026-10-09-xray-accept-11-percent.md, set its status accepted; otherwise → rebuild as that doc's last section says
-2. Claude, cleanup phase 3c–3g (details in the plan): first check the devcontainer runs the new image (no `ultralytics`, `python -m pytest` 116 passed); then 3c review categories from config (standard set + own, no hard-coded `fin_cut` in `scripts/error_report.py` / review page) + fixed error-report structure, 3d split class column from config, 3e own labels CSV, 3f sort `scripts/`, 3g README + review-loop how-to
+2. Claude, cleanup phase 3c–3g (details in the plan; the container runs the new image, checked 2026-10-11): 3c review categories from config (standard set + own, no hard-coded `fin_cut` in `scripts/error_report.py` / review page) + fixed error-report structure, 3d split class column from config, 3e own labels CSV, 3f sort `scripts/`, 3g README + review-loop how-to
 3. Claude + Neo, cleanup phase 4: full rebuild `python scripts/run_part1.py --config pipeline/config_thesis_nhm.yaml --name rebuild_<date>` (~4 h GPU, GPU must be free) and compare against `D_final_2026-10-09`; then Neo OKs the delete list in the plan
 4. Claude: update vault/thesis-log/PLAN.md (origin-ID not in the NHM set, moves to the live-fish dataset; part-1 "done when" = genus labels)
 5. Milestone 2 (baselines) not before Neo says so (Neo, 2026-10-09)
